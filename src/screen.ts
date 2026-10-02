@@ -2,6 +2,7 @@
 // Words on this page follow design/README.md.
 
 import { actorFromRequest, clearCookie, keyCookie } from "./auth";
+import { describeError } from "./redact";
 import type { Env } from "./env";
 import { icon } from "./icons";
 import type { ProofLine } from "./diff";
@@ -405,6 +406,8 @@ export async function handleScreen(request: Request, env: Env): Promise<Response
 			return html(renderSignIn(error.message), error.status);
 		}
 		if (path === "/suggestion") {
+			const failure = describeError(error);
+			console.error(failure.code, failure.message);
 			return Response.json({ ok: false, error: "The suggestion could not be saved." }, { status: 500 });
 		}
 		return html(renderSignIn("The library could not be opened. Try again."), 500);

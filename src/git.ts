@@ -120,23 +120,20 @@ export async function publishSavedEdition(input: PublishInput): Promise<PublishO
 
 	let noteCommit: string | null = null;
 	if (input.note) {
-		// The note is a separate commit on refs/notes/*, so the edition itself
-		// does not change. https://developers.cloudflare.com/artifacts/concepts/best-practices/
-		noteCommit = await git.addNote({
-			fs,
-			dir,
-			oid: edition,
-			ref: NOTES_REF,
-			note: input.note.text,
-			author: input.author,
-			force: true,
-		});
+		noteCommit = await writeNote(fs, input.remote, onAuth, edition, input.note.text, input.author);
 	}
 
 	input.beforePush?.();
 	input.mark?.("push-start");
 	await pushRef(fs, input.remote, branch, onAuth);
-	if (noteCommit) await pushRef(fs, input.remote, NOTES_REF, onAuth);
+	if (noteCommit) {
+		try {
+			await pushRef(fs, input.remote, NOTES_REF, onAuth);
+		} catch {
+			// The edition is already saved. A missing note does not undo it.
+			noteCommit = null;
+		}
+	}
 	input.mark?.("push-end");
 
 	return { edition, noteCommit };
@@ -161,6 +158,46 @@ export interface PrepareContext {
 export type PrepareOutcome = { files: PreparedFile[]; message: string; note?: string } | { stop: string };
 
 const PUBLISH_ATTEMPTS = 3;
+
+/**
+ * A note sits on its own ref, so a shallow clone of main does not contain it.
+ * Fetch that ref first when it already exists, then add the note on top.
+ * Otherwise the send is not a fast-forward and the note is refused.
+ * https://developers.cloudflare.com/artifacts/concepts/best-practices/
+ */
+async function writeNote(
+	fs: MemoryFS,
+	remote: string,
+	onAuth: () => { username: string; password: string },
+	edition: string,
+	note: string,
+	author: Author,
+): Promise<string> {
+	try {
+		await git.fetch({
+			fs,
+			http,
+			dir: "/work",
+			url: remote,
+			ref: NOTES_REF,
+			singleBranch: true,
+			depth: 1,
+			onAuth,
+			headers: gitHeaders(),
+		});
+	} catch {
+		// The first note on a copy. There is no ref to fetch yet.
+	}
+	return git.addNote({
+		fs,
+		dir: "/work",
+		oid: edition,
+		ref: NOTES_REF,
+		note,
+		author,
+		force: true,
+	});
+}
 
 function raced(reason: string): boolean {
 	return /non-fast-forward|rejected|cannot lock|failed to lock|failed to push|failed to update ref|not updated/i.test(
@@ -233,15 +270,7 @@ export async function publishPrepared(input: {
 		});
 		let noteCommit: string | null = null;
 		if (prepared.note) {
-			noteCommit = await git.addNote({
-				fs,
-				dir,
-				oid: edition,
-				ref: NOTES_REF,
-				note: prepared.note,
-				author: input.author,
-				force: true,
-			});
+			noteCommit = await writeNote(fs, input.remote, onAuth, edition, prepared.note, input.author);
 		}
 		try {
 			await pushRef(fs, input.remote, "main", onAuth);
