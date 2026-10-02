@@ -1,0 +1,14 @@
+name = "stylebook"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# One Artifacts namespace is one workspace. The library and every suggestion
+# copy live in it, because a copy made with fork() stays in its source namespace.
+[[artifacts]]
+binding = "WORKSPACE"
+namespace = "stylebook-demo"
+remote = true # local dev talks to the real Artifacts service
+
+[observability]
+enabled = true

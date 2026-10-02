@@ -1,0 +1,5 @@
+# Test-only config. No bindings, so `wrangler dev` runs fully locally.
+name = "stylebook-workerd-test"
+main = "entry.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
