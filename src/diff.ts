@@ -253,7 +253,7 @@ function applyWithin(base: string[], chosen: Hunk[], start: number, end: number)
  */
 export function combineChanges(library: string, first: string, second: string): string {
 	const clean = merge3(library, first, second);
-	if (clean.ok) return clean.text;
+	if (clean.ok) return collapseRepeatedSections(clean.text);
 
 	const base = linesOf(library);
 	const tagged = [
@@ -292,7 +292,98 @@ export function combineChanges(library: string, first: string, second: string): 
 		cursor = Math.max(cursor, group.end);
 	}
 	out.push(...base.slice(cursor));
-	return finish(out, library.endsWith("\n") ? library : `${library}\n`);
+	return collapseRepeatedSections(finish(out, library.endsWith("\n") ? library : `${library}\n`));
+}
+
+/**
+ * A library that already contains the same part twice makes a line-level
+ * combination print that part twice. Fold the later copy into the earlier
+ * one: a line already there is kept once, a shorter copy of a longer line is
+ * the same step, and a line only the later copy has is inserted with the
+ * other lines that share its number.
+ */
+function collapseRepeatedSections(text: string): string {
+	const lines = linesOf(text);
+	const blocks: { heading: string | null; lines: string[] }[] = [];
+	let current: { heading: string | null; lines: string[] } = { heading: null, lines: [] };
+	for (const line of lines) {
+		const heading = /^##\s+(.+?)\s*$/.exec(line);
+		if (heading) {
+			if (current.heading !== null || current.lines.length > 0) blocks.push(current);
+			current = { heading: heading[1]!.trim(), lines: [line] };
+			continue;
+		}
+		current.lines.push(line);
+	}
+	if (current.heading !== null || current.lines.length > 0) blocks.push(current);
+
+	const merged: { heading: string | null; lines: string[] }[] = [];
+	for (const block of blocks) {
+		const prev = merged[merged.length - 1];
+		if (prev?.heading && block.heading === prev.heading) {
+			const seen = prev.lines.filter((line) => line.trim() !== "");
+			for (const line of block.lines) {
+				if (line.trim() === "" || alreadyKept(seen, line)) continue;
+				const number = /^(\d+)\.\s+/.exec(line)?.[1];
+				let at = prev.lines.length;
+				if (number) {
+					for (let index = prev.lines.length - 1; index >= 0; index--) {
+						if (new RegExp(`^${number}\\.\\s+`).test(prev.lines[index] ?? "")) {
+							at = index + 1;
+							break;
+						}
+					}
+				}
+				prev.lines.splice(at, 0, line);
+				seen.push(line);
+			}
+			continue;
+		}
+		merged.push({ heading: block.heading, lines: [...block.lines] });
+	}
+	return finish(
+		merged.flatMap((block) => block.lines),
+		text.endsWith("\n") ? text : `${text}\n`,
+	);
+}
+
+function alreadyKept(seen: string[], line: string): boolean {
+	return seen.some((kept) => kept === line || (kept.startsWith(line) && kept.length > line.length));
+}
+
+/**
+ * A combined page should not draw a second copy of a part the result already
+ * shows. A deleted line that is already on the page, or a shorter copy of a
+ * longer line already on the page, is that repeated part.
+ */
+export function omitRepeatedDeletions(lines: ProofLine[]): ProofLine[] {
+	const kept: string[] = [];
+	const out: ProofLine[] = [];
+	for (const line of lines) {
+		if (line.kind === "del" && line.text.trim() !== "" && alreadyKept(kept, line.text)) continue;
+		out.push(line);
+		if (line.kind !== "del" && line.text.trim() !== "") kept.push(line.text);
+	}
+	return parkReplacedLines(out);
+}
+
+/** A replaced step belongs next to the step that takes its place, not after the rest of the page. */
+function parkReplacedLines(lines: ProofLine[]): ProofLine[] {
+	const out = [...lines];
+	for (let index = 0; index < out.length; index++) {
+		const line = out[index];
+		if (!line || line.kind !== "del") continue;
+		const number = /^(\d+)\.\s+/.exec(line.text)?.[1];
+		if (!number) continue;
+		const spot = out.findIndex(
+			(item, at) => at < index && item.kind === "ins" && new RegExp(`^${number}\\.\\s+`).test(item.text),
+		);
+		if (spot === -1) continue;
+		out.splice(index, 1);
+		out.splice(spot, 0, line);
+		index--;
+	}
+	return out;
 }
 
 export function proofLines(library: string, selected: string, tone: Pencil, number: number): ProofLine[] {

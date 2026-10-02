@@ -1,6 +1,14 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { registerActor } from "../src/actors";
-import { changedSections, combineChanges, merge3, proofLines, sameLinesConflict, withOverlapMarks } from "../src/diff";
+import {
+	changedSections,
+	combineChanges,
+	merge3,
+	omitRepeatedDeletions,
+	proofLines,
+	sameLinesConflict,
+	withOverlapMarks,
+} from "../src/diff";
 import type { Env } from "../src/env";
 import worker from "../src/index";
 import { STARTER_SKILL, STARTER_SKILL_PATH } from "../src/seed";
@@ -81,6 +89,41 @@ describe("compare and combine", () => {
 			expect(count(line), line).toBeGreaterThanOrEqual(1);
 		}
 		expect(combined.length).toBeLessThan(STARTER_SKILL.length + 200);
+	});
+
+	it("folds a part the library already contains twice", () => {
+		const current = STARTER_SKILL.replace(
+			step,
+			"1. Read the whole transcript, including the small talk, before writing anything.",
+		);
+		const duplicated = current.replace(
+			"## Never\n",
+			`## Steps\n\n${step}\n2. List the five strongest quotes with their timestamps or line numbers. Copy them exactly.\n3. Propose a headline and a one-paragraph outline. Wait for the writer to confirm the angle.\n4. Write the draft. Every quote must appear in the transcript word for word.\n5. End with two lists: claims that need checking, and questions the interview did not answer.\n\n## Never\n`,
+		);
+		const twice = duplicated.replace(step, "1. Read the whole transcript twice before writing anything.");
+		const brief = duplicated.replace(step, "1. Read the brief, then the whole transcript before writing anything.");
+		const combined = combineChanges(duplicated, twice, brief);
+		expect(combined.split("## Steps").length - 1).toBe(1);
+		expect(combined).toContain("including the small talk");
+		expect(combined).toContain("Read the whole transcript twice");
+		expect(combined).toContain("Read the brief, then the whole transcript");
+		expect(combined).not.toContain(step);
+		expect(combined.split("List the five strongest quotes").length - 1).toBe(1);
+		const twiceAt = combined.indexOf("Read the whole transcript twice");
+		const briefAt = combined.indexOf("Read the brief, then the whole transcript");
+		const secondAt = combined.indexOf("2. List the five strongest quotes");
+		expect(twiceAt).toBeGreaterThan(-1);
+		expect(briefAt).toBeGreaterThan(twiceAt);
+		expect(secondAt).toBeGreaterThan(briefAt);
+		const shown = omitRepeatedDeletions(proofLines(duplicated, combined, "green", 3));
+		expect(shown.filter((line) => line.text === "## Steps")).toHaveLength(1);
+		const order = shown.map((line) => line.text);
+		const oldAt = order.indexOf(step);
+		const shownTwice = order.findIndex((line) => line.includes("twice"));
+		const shownBrief = order.findIndex((line) => line.includes("Read the brief, then"));
+		expect(oldAt).toBeGreaterThan(-1);
+		expect(shownTwice).toBe(oldAt + 1);
+		expect(shownBrief).toBe(shownTwice + 1);
 	});
 
 	it("combines changes to different lines the same way a clean publish would", () => {
