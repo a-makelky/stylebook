@@ -173,20 +173,42 @@ async function writeNote(
 	note: string,
 	author: Author,
 ): Promise<string> {
+	// A shallow clone of main does not contain this ref. Fetch it and point
+	// the local ref at it, because the default fetch refspec only stores
+	// branches. addNote then builds on that commit instead of starting over.
+	let parent: string | null = null;
 	try {
+		const listed = await git.listServerRefs({
+			http,
+			url: remote,
+			onAuth,
+			headers: gitHeaders(),
+			protocolVersion: 1,
+			prefix: NOTES_REF,
+		});
+		parent = listed.find((item) => item.ref === NOTES_REF)?.oid ?? null;
+	} catch {
+		parent = null;
+	}
+	if (parent) {
 		await git.fetch({
 			fs,
 			http,
 			dir: "/work",
 			url: remote,
-			ref: NOTES_REF,
+			remoteRef: NOTES_REF,
 			singleBranch: true,
 			depth: 1,
 			onAuth,
 			headers: gitHeaders(),
 		});
-	} catch {
-		// The first note on a copy. There is no ref to fetch yet.
+		await git.writeRef({
+			fs,
+			dir: "/work",
+			ref: NOTES_REF,
+			value: parent,
+			force: true,
+		});
 	}
 	return git.addNote({
 		fs,

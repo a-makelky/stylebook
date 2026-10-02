@@ -280,7 +280,8 @@ describe("review screen", () => {
 		const history = await fetch(`${origin}/?item=${encodeURIComponent(STARTER_SKILL_PATH)}`, { headers: { Cookie: cookie } });
 		const historyHtml = await history.text();
 		assertClean(historyHtml);
-		expect(historyHtml).toContain("Written by Cursor for Editor, approved by Editor.");
+		const newest = historyHtml.match(/Edition \d+\. [^<]+/)?.[0] ?? "";
+		expect(newest).toContain("Written by Cursor for Editor, approved by Editor.");
 	}, 60_000);
 
 	it("retries a second publish so neither change is lost", async () => {
