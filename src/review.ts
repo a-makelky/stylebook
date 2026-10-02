@@ -9,6 +9,7 @@ import { copyCursor, recentCopies } from "./audit";
 import {
 	changedSections,
 	combineChanges,
+	omitRepeatedDeletions,
 	merge3,
 	proofLines,
 	sameLinesConflict,
@@ -348,6 +349,7 @@ function pageLines(libraryText: string, selected: OpenSuggestion | null, overlap
 	}
 	const tone = selected.combined ? "green" : "blue";
 	let lines = proofLines(libraryText, selected.text, tone, selected.number);
+	if (selected.combined) lines = omitRepeatedDeletions(lines);
 	for (const other of overlaps) {
 		const shared = selected.sections.filter((section) => other.sections.includes(section));
 		if (shared.length === 0) continue;
