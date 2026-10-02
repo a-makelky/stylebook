@@ -24,7 +24,7 @@ This table is the honest state of the code, not a roadmap.
 | Who made each change and why | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-3.md). |
 | Review screen: compare, flag overlaps, publish | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-4.md). |
 | Pull the library with plain Git or over MCP | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-5.md). |
-| Workspaces, email sign-in, invites, and connecting an agent | See the latest run log in [`docs/runs/`](docs/runs/). |
+| Workspaces, email sign-in, invites, and connecting an agent | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-teams.md). Sign-in email is not delivered until the domain is onboarded for Email Service. |
 
 Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for a piece, treat that piece as unproven.
 
@@ -32,7 +32,7 @@ Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for
 
 Stylebook is hosted at [stylebook.dev](https://stylebook.dev). A writer opens that address in a browser. They do not need Cloudflare or a terminal.
 
-1. Start a workspace with a name and an email address. The email contains a link. It works once and expires in 15 minutes. Opening it lands on the library, which already holds the sample pages.
+1. Start a workspace with a name and an email address. Stylebook sends a link from `sign-in@stylebook.dev`. It works once and expires in 15 minutes. Opening it lands on the library, which already holds the sample pages. The domain has to be onboarded for Email Service before a link can arrive. The run log records the current state of that.
 2. From People and agents, invite a colleague by email. Their link signs them into that same workspace. Everyone in the workspace can review and publish. Remove ends that person's sessions.
 3. Connect an agent by giving it a name and picking the tool. The key is shown once, with a setup for Cursor or Claude Code and a setup for a folder on your computer. The agent's first suggestion then appears on the page. An agent can be renamed, and its key can be revoked.
 
