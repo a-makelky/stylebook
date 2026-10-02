@@ -1,10 +1,10 @@
+import type { Env } from "./env";
+import { sanitize, describeError } from "./redact";
+import { d1ArrivalLog, runSwarm, workflowLauncher, MAX_SESSIONS } from "./swarm";
 import { runTracer } from "./tracer";
+import { ArrivalWorkflow, SuggestionWorkflow } from "./workflows";
 
-export interface Env {
-	WORKSPACE: Artifacts;
-	/** Secret. Callers of the demo routes send it as a bearer token. */
-	DEMO_KEY?: string;
-}
+export { ArrivalWorkflow, SuggestionWorkflow };
 
 function json(body: unknown, status = 200): Response {
 	return Response.json(body, { status });
@@ -70,19 +70,54 @@ export default {
 					session,
 					addEdition: body.addEdition === true,
 				});
-				return json({ ok: true, ...result });
+				return json(sanitize({ ok: true, ...result }));
 			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				const code =
-					typeof error === "object" && error !== null && "code" in error
-						? String((error as { code: unknown }).code)
-						: null;
-				return json({ ok: false, error: message, code }, 500);
+				const failure = describeError(error);
+				return json(sanitize({ ok: false, error: failure.message, code: failure.code }), 500);
+			}
+		}
+
+		if (request.method === "POST" && url.pathname === "/demo/suggestions") {
+			const denied = checkDemoKey(request, env);
+			if (denied) return denied;
+
+			const body = (await request.json().catch(() => ({}))) as {
+				actor?: unknown;
+				n?: unknown;
+			};
+			const actor = typeof body.actor === "string" && body.actor ? body.actor : "agent";
+			const n = body.n === undefined ? 25 : body.n;
+			if (typeof actor !== "string" || actor.length > 24) {
+				return json({ ok: false, error: "actor must be a short string." }, 400);
+			}
+			if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > MAX_SESSIONS) {
+				return json(
+					{ ok: false, error: `n must be a whole number from 1 to ${MAX_SESSIONS}.` },
+					400,
+				);
+			}
+
+			try {
+				const report = await runSwarm({
+					workspace: env.WORKSPACE,
+					launcher: workflowLauncher(env.SUGGESTIONS),
+					arrivals: d1ArrivalLog(env.DB),
+					n,
+					actor,
+					runner: "workflow-instances",
+				});
+				return json(sanitize(report));
+			} catch (error) {
+				const failure = describeError(error);
+				return json(sanitize({ ok: false, error: failure.message, code: failure.code }), 500);
 			}
 		}
 
 		return json(
-			{ ok: false, error: "Not found. Try GET /health or POST /demo/tracer." },
+			{
+				ok: false,
+				error: "Not found. Try GET /health, POST /demo/tracer, or POST /demo/suggestions.",
+			},
 			404,
 		);
 	},

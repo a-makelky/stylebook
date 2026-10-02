@@ -33,7 +33,12 @@ Code, comments and this file may use the Git words. Users never see them.
 - `src/workspace.ts` — library and suggestion copies over the Artifacts binding
 - `src/git.ts` — writing an edition with isomorphic-git
 - `src/memory-fs.ts` — in-memory file system isomorphic-git runs on
-- `src/tracer.ts` — Tracer 1, the first end-to-end path
+- `src/tracer.ts` — the first end-to-end path: library, copy, read back
+- `src/edits.ts` — scripted changes the concurrent sessions apply
+- `src/session.ts` — one suggestion session
+- `src/swarm.ts` — start many sessions at once and collect what came back
+- `src/workflows.ts` — the session Workflow, and the Workflow that records a push
+- `src/arrivals.ts` — the push event turned into one arrival row
 - `test/` — local tests, a local Git server, and a stand-in for the binding
 - `docs/runs/` — run logs from live runs
 

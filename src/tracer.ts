@@ -56,8 +56,8 @@ export interface TracerResult {
 	note: string | null;
 }
 
-// Placeholder identity for demo writes. Real actors arrive with Tracer 3.
-const DEMO_AUTHOR: Author = {
+// Placeholder identity for demo writes. Real actors arrive with the next tracer.
+export const DEMO_AUTHOR: Author = {
 	name: "Stylebook demo",
 	email: "demo@stylebook.invalid",
 };
