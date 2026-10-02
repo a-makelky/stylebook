@@ -52,9 +52,10 @@ function renderLines(lines: ProofLine[]): string {
 	const hiding = { on: false };
 	const html: string[] = [];
 	let list: string[] = [];
+	let listTag: "ul" | "ol" = "ul";
 	const flush = () => {
 		if (list.length === 0) return;
-		html.push(`<ul>${list.join("")}</ul>`);
+		html.push(`<${listTag}>${list.join("")}</${listTag}>`);
 		list = [];
 	};
 	for (const line of lines) {
@@ -71,9 +72,15 @@ function renderLines(lines: ProofLine[]): string {
 			html.push(`<h2>${mark({ ...line, text: line.text.replace(/^##\s+/, "") })}</h2>`);
 			continue;
 		}
-		if (/^(?:[-*]|\d+\.)\s/.test(line.text)) {
-			const item = line.text.replace(/^(?:[-*]|\d+\.)\s+/, "");
-			list.push(`<li>${mark({ ...line, text: item })}</li>`);
+		const listItem = /^\s*(?:([-*])|(\d+)\.)\s+(.*)$/.exec(line.text);
+		if (listItem) {
+			const tag = listItem[2] ? "ol" : "ul";
+			if (list.length > 0 && tag !== listTag) flush();
+			listTag = tag;
+			// A changed step keeps its own number, so a struck line and its
+			// replacement both read as the same step.
+			const value = listItem[2] ? ` value="${Number(listItem[2])}"` : "";
+			list.push(`<li${value}>${mark({ ...line, text: listItem[3] ?? "" })}</li>`);
 			continue;
 		}
 		if (line.text.trim() === "") {
@@ -235,7 +242,11 @@ function page(parts: { main: string }): string {
   .page-body p, .page-body li { margin: 0 0 0.8em; }
   .lede, .meta { color: var(--graphite); font-style: italic; font-size: 16px; line-height: 1.5; }
   .contents, .suggestions { font-size: 17px; line-height: 1.5; }
-  .contents ul, .page-body ul { list-style: none; padding: 0; margin: 0; }
+  .contents ul { list-style: none; padding: 0; margin: 0; }
+  .page-body ul, .page-body ol { padding: 0 0 0 1.4em; margin: 0 0 0.8em; }
+  .page-body ul { list-style: disc; }
+  .page-body ol { list-style: decimal; }
+  .page-body li::marker { color: var(--graphite); }
   .contents li { margin: 6px 0; }
   .contents a[aria-current="page"] { color: var(--blue); }
   .suggestion { padding: 16px 0; border-top: 1px solid var(--rule); }

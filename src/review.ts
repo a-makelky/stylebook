@@ -302,6 +302,12 @@ async function openSuggestions(
 			// The requested copy is absent. The page still shows the rest.
 		}
 	}
+	// A combined copy's name ends in a random suffix, which is not a number a
+	// person should read. Number combined suggestions after the others.
+	let next = Math.max(0, ...found.filter((entry) => !entry.combined).map((entry) => entry.number));
+	for (const entry of found.filter((item) => item.combined).sort((a, b) => a.name.localeCompare(b.name))) {
+		entry.number = ++next;
+	}
 	const moreBefore = hasExtra && rows.length > 0 ? copyCursor(rows[rows.length - 1]!) : null;
 	return { suggestions: found.slice(0, SUGGESTION_PAGE), moreBefore };
 }
@@ -400,10 +406,19 @@ export async function loadDesk(
 	const suggestions = opened.suggestions;
 	const selected =
 		suggestions.find((entry) => entry.name === suggestion) ?? suggestions[0] ?? null;
-	const { overlaps, conflict } = selected
+	const paired = selected
 		? overlapPairs(selected, suggestions, libraryText)
 		: { overlaps: [], conflict: null };
-	let blocked = conflict;
+	// A combined suggestion already contains the two it was made from, so
+	// drawing their marks again on it would only repeat its own lines.
+	const sources = new Set(
+		selected?.combined ? [...selected.why.matchAll(/Suggestion (\d+)/g)].map((match) => Number(match[1])) : [],
+	);
+	const overlaps = paired.overlaps.filter((item) => !sources.has(item.number));
+	const conflict = paired.conflict;
+	// A combined suggestion is the way out of the overlap it was made from, so
+	// its sources being open do not block it (publish follows the same rule).
+	let blocked = selected?.combined ? null : conflict;
 	if (selected && !blocked) {
 		const onto = merge3(selected.base, libraryText, selected.text);
 		if (!onto.ok) {
