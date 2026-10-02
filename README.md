@@ -11,59 +11,168 @@ It is for teams who write, research and publish for a living and do not want to 
 - Many agents can do that at the same time, each in its own copy.
 - A person compares the suggestions and **publishes** the one they want. That is a new **edition**.
 
-Underneath, the library and every copy are Git repositories on [Cloudflare Artifacts](https://developers.cloudflare.com/artifacts/). That is what keeps the library portable: any tool that speaks Git can pull it.
+Underneath, the library and every copy are Git repositories on [Cloudflare Artifacts](https://developers.cloudflare.com/artifacts/). That is what keeps the library portable: any tool that speaks Git can pull it, and an agent tool can use the MCP endpoint on the same host. The address a Git client uses is this Worker. It does not include an Artifacts remote.
 
 ## Status
 
-Early. This table is the honest state of the code, not a roadmap.
+This table is the honest state of the code, not a roadmap.
 
 | Piece | State |
 | --- | --- |
-| Library, suggestion copy, read back, history (Tracer 1) | Ran live on 2026-10-02. A new copy names the library as its source, the skill read back matched, and a second edition was on both the library and that copy. Calling again for the same session reused the existing copy. See [the run log](docs/runs/2026-10-02-tracer-1.md). |
-| Many agents suggesting at once | Ran live on 2026-10-02. One request started 25 agents together, and a second started 100. Each got its own copy and saved one edition of the interview-to-draft skill. Their work overlapped in time. Each save was recorded when it arrived. See [the run log](docs/runs/2026-10-02-tracer-2.md). |
-| Who made each change and why | Ran live on 2026-10-02. A person and two agents who work for that person are distinct. Saving an edition through Stylebook worked from outside the Worker as well as from an agent. An agent that put someone else's name on an edition was still recorded as that agent, and that key was refused for the library and for another agent's copy. Each agent-saved edition says why, and asking who saved it returns the agent, the person they work for, and that why. A save that did not come through Stylebook was flagged. See [the run log](docs/runs/2026-10-02-tracer-3.md). |
-| Review screen: compare, flag overlaps, publish | Not started |
-| Pull the library with plain Git or over MCP | Not started |
+| Library, suggestion copy, read back, history (Tracer 1) | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-1.md). |
+| Many agents suggesting at once | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-2.md). |
+| Who made each change and why | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-3.md). |
+| Review screen: compare, flag overlaps, publish | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-4.md). |
+| Pull the library with plain Git or over MCP | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-5.md). |
 
 Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for a piece, treat that piece as unproven.
 
 ## Run it
 
-You need Node 22 and a Cloudflare account on the Workers Paid plan, which Artifacts requires.
+You need Node.js 22, Git, and a Cloudflare account on the Workers Paid plan. Artifacts requires that plan. See [Get started](https://developers.cloudflare.com/artifacts/get-started/).
+
+From a fresh clone of this project:
 
 ```sh
 npm install
 npx wrangler login
-npx wrangler deploy
-npx wrangler secret put DEMO_KEY   # any long random string
 ```
 
-Then call the tracer with that key:
+Create the database that records arrivals, unless `wrangler.toml` already points at one in your account:
 
 ```sh
-curl -X POST https://<your-worker-url>/demo/tracer \
-  -H "Authorization: Bearer <your DEMO_KEY>" \
+npx wrangler d1 create stylebook
+```
+
+If the name is already taken, the database exists. Read its id:
+
+```sh
+npx wrangler d1 info stylebook
+```
+
+When that id differs from `database_id` under `[[d1_databases]]` in `wrangler.toml`, replace the value in the file with the id just printed. Then apply the migrations:
+
+```sh
+npx wrangler d1 migrations apply stylebook --remote
+```
+
+The workspace name in `wrangler.toml` is `stylebook-review`. One workspace holds the library and every suggestion copy, because a copy made with `fork()` stays in the namespace it was made from. If that namespace does not exist yet, Artifacts creates it when the first copy is created. See [Namespaces](https://developers.cloudflare.com/artifacts/concepts/namespaces/).
+
+`wrangler.toml` attaches `stylebook.dev` as a [custom domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/). Delete the `[[routes]]` block before you deploy if that domain is not in your Cloudflare account. The deploy fails when the domain belongs to another account.
+
+```sh
+npx wrangler deploy
+npx wrangler secret put DEMO_KEY
+```
+
+Type any long random string when asked. The demo routes refuse every request that does not carry it. Without the secret set they answer 503.
+
+In the commands below, `$DEMO_KEY` is that string and `$HOST` is the `https://` URL Wrangler printed. When `stylebook.dev` answers, you can use `https://stylebook.dev` instead.
+
+### Open suggestions
+
+This registers one person, Editor, and two agents who work for that person, Researcher and Proofreader. It then saves about a dozen suggestions. Two of them change the same line of Steps. Two others change different parts of the same page, so they can be combined.
+
+```sh
+export PERSON_KEY=$(openssl rand -hex 24)
+export RESEARCHER_KEY=$(openssl rand -hex 24)
+export PROOFREADER_KEY=$(openssl rand -hex 24)
+
+curl -X POST "$HOST/demo/seed" \
+  -A stylebook-live-run \
+  -H "Authorization: Bearer $DEMO_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"personKey\":\"$PERSON_KEY\",\"researcherKey\":\"$RESEARCHER_KEY\",\"proofreaderKey\":\"$PROOFREADER_KEY\"}"
+```
+
+Keep the three keys. The seed request can take about a minute. Open `$HOST` in a browser and sign in with `$PERSON_KEY`. The first page lists the newest suggestions. When more copies exist than fit on the page, it links to the older ones and does not read every copy.
+
+The `workers.dev` hostname returns [error 1010](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/) for Python's default user agent. That refusal happens before the request reaches the Worker. `curl` and Git get through on that hostname. On `stylebook.dev` the same Python agent gets through. If a hostname you control returns 1010, [Browser Integrity Check](https://developers.cloudflare.com/waf/tools/browser-integrity-check/) is refusing the client. The commands below send `-A stylebook-live-run` so they do not depend on that check. Git sends its own user agent. The run log records what got through.
+
+### Plain Git
+
+Ask the Worker for a read credential for the library. The response's `remote` is this host. It is not an Artifacts address. Read credentials are for clone and fetch. A write credential is only for a push. See [Best practices](https://developers.cloudflare.com/artifacts/concepts/best-practices/) and the [Git protocol](https://developers.cloudflare.com/artifacts/api/git-protocol/).
+
+```sh
+curl -sS -X POST "$HOST/git/access" \
+  -A stylebook-live-run \
+  -H "Authorization: Bearer $PERSON_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"library","write":false}'
+```
+
+Take `token` from the response. Strip the scheme from `$HOST`:
+
+```sh
+HOST_ONLY=${HOST#https://}
+```
+
+```sh
+git clone "https://stylebook:<token>@${HOST_ONLY}/git/library.git" stylebook-library
+```
+
+That clone needs only Git. The files in `stylebook-library` are the library.
+
+An agent that may write its own copy can push to `https://stylebook:<agent-key>@${HOST_ONLY}/git/<copy-name>.git`. A person publishes from the page. An agent key cannot publish the library.
+
+### MCP
+
+The endpoint is `$HOST/mcp`. It speaks JSON-RPC over HTTP, the streamable HTTP shape described in [Cloudflare's MCP transport notes](https://developers.cloudflare.com/agents/model-context-protocol/protocol/transport/). Send the agent's Stylebook key as `Authorization: Bearer`. These tools are available:
+
+| Tool | What it does |
+| --- | --- |
+| `list_library` | List the pages in the library |
+| `read_item` | Read one page. Argument: `path` |
+| `suggest_change` | Save a suggestion on that agent's own copy. Arguments: `path`, `content`, `why`, and an optional `session` |
+| `list_suggestions` | List open suggestions for one page, newest first. Argument: `path` |
+
+A change suggested here is saved the same way as a change pushed with Git: the Worker checks the key and forwards the write.
+
+Point any MCP client that supports a remote HTTP endpoint at `$HOST/mcp`, with the bearer key. To try it with curl, initialize, then call a tool:
+
+```sh
+curl -sS -X POST "$HOST/mcp" \
+  -A stylebook-live-run \
+  -H "Authorization: Bearer $RESEARCHER_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+
+curl -sS -X POST "$HOST/mcp" \
+  -A stylebook-live-run \
+  -H "Authorization: Bearer $RESEARCHER_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_item","arguments":{"path":"skills/interview-to-draft/SKILL.md"}}}'
+```
+
+To suggest a change, call `suggest_change` with the full new text of the page and a `why`. Sign in on the page with `$PERSON_KEY` and the suggestion is listed there.
+
+### Many agents at once
+
+To start many agents at once, send a named user agent:
+
+```sh
+curl -X POST "$HOST/demo/suggestions" \
+  -A stylebook-live-run \
+  -H "Authorization: Bearer $DEMO_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"n\": 25, \"key\": \"$RESEARCHER_KEY\", \"personKey\": \"$PERSON_KEY\"}"
+```
+
+The response lists each copy and whether the agents' work overlapped. It does not include credentials. `n` can be from 1 to 100. Ask who saved an edition with `GET $HOST/who?edition=<id>` and the person's key.
+
+Those copies land in the same workspace as the library. The page shows the newest ones first.
+
+The earlier tracer route is still there:
+
+```sh
+curl -X POST "$HOST/demo/tracer" \
+  -A stylebook-live-run \
+  -H "Authorization: Bearer $DEMO_KEY" \
   -H "Content-Type: application/json" \
   -d '{"actor": "demo-agent", "session": "one"}'
 ```
-
-The response reports the library's editions, the name and source of the copy, and whether the skill read back from the copy is byte-identical to the library's. Add `"addEdition": true` to give the library another edition before the copy is made.
-
-The demo route creates repositories on your account, so it refuses every request that does not carry the key. Without the secret set it answers 503.
-
-To start many agents at once, send a named user agent (a request with none was refused before it reached the Worker):
-
-```sh
-curl -X POST https://<your-worker-url>/demo/suggestions \
-  -A stylebook-live-run \
-  -H "Authorization: Bearer <your DEMO_KEY>" \
-  -H "Content-Type: application/json" \
-  -d '{"n": 25, "key": "<agent key>", "personKey": "<person key>"}'
-```
-
-The response lists each copy, the edition it saved, who saved it, and whether the agents' work overlapped. It does not include credentials. `n` can be from 1 to 100. The agent key and the person key are registered first; the agent works for that person. Ask who saved an edition with `GET /who?edition=<id>`.
-
-These steps were run against a live account on 2026-10-02. The record, with the key removed, is in [docs/runs/2026-10-02-tracer-1.md](docs/runs/2026-10-02-tracer-1.md).
 
 ## Develop
 

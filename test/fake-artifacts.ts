@@ -45,6 +45,7 @@ export class FakeWorkspace {
 	 */
 	forkDelayCalls = 0;
 	forkCalls: string[] = [];
+	gets: string[] = [];
 
 	static async start(): Promise<FakeWorkspace> {
 		const workspace = new FakeWorkspace();
@@ -138,6 +139,7 @@ export class FakeWorkspace {
 	}
 
 	async get(name: string) {
+		this.gets.push(name);
 		const record = this.record(name);
 		if (record.notReadyFor > 0) {
 			record.notReadyFor -= 1;

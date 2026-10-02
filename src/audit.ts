@@ -168,6 +168,79 @@ export async function auditSince(db: D1Database, since: string): Promise<AuditSn
 	};
 }
 
+export interface RecentCopy {
+	id: number;
+	repoName: string;
+	editionId: string;
+	acceptedAt: string;
+	actorId: string;
+	actorName: string;
+	ownerName: string;
+}
+
+/**
+ * Newest suggestion copies the Git route has accepted, one row per copy.
+ * `before` is the last row already shown, as `acceptedAt|id`.
+ */
+export async function recentCopies(db: D1Database, before: string | null, limit: number): Promise<RecentCopy[]> {
+	const split = before?.split("|") ?? [];
+	const beforeAt = split[0] || null;
+	const beforeId = Number(split[1] ?? "0");
+	const hasCursor = Boolean(beforeAt) && Number.isFinite(beforeId);
+	const statement = hasCursor
+		? db
+				.prepare(
+					`SELECT g.id, g.repo_name, g.edition_id, g.accepted_at, g.actor_id, g.actor_name, g.owner_name
+           FROM gateway_pushes g
+           INNER JOIN (
+             SELECT repo_name, MAX(id) AS id
+             FROM gateway_pushes
+             WHERE ref_name = 'refs/heads/main' AND repo_name LIKE 'sug-%'
+             GROUP BY repo_name
+           ) latest ON latest.id = g.id
+           WHERE g.accepted_at < ?1 OR (g.accepted_at = ?2 AND g.id < ?3)
+           ORDER BY g.accepted_at DESC, g.id DESC
+           LIMIT ?4`,
+				)
+				.bind(beforeAt, beforeAt, beforeId, limit)
+		: db
+				.prepare(
+					`SELECT g.id, g.repo_name, g.edition_id, g.accepted_at, g.actor_id, g.actor_name, g.owner_name
+           FROM gateway_pushes g
+           INNER JOIN (
+             SELECT repo_name, MAX(id) AS id
+             FROM gateway_pushes
+             WHERE ref_name = 'refs/heads/main' AND repo_name LIKE 'sug-%'
+             GROUP BY repo_name
+           ) latest ON latest.id = g.id
+           ORDER BY g.accepted_at DESC, g.id DESC
+           LIMIT ?1`,
+				)
+				.bind(limit);
+	const rows = await statement.all<{
+		id: number;
+		repo_name: string;
+		edition_id: string;
+		accepted_at: string;
+		actor_id: string;
+		actor_name: string;
+		owner_name: string;
+	}>();
+	return (rows.results ?? []).map((row) => ({
+		id: row.id,
+		repoName: row.repo_name,
+		editionId: row.edition_id,
+		acceptedAt: row.accepted_at,
+		actorId: row.actor_id,
+		actorName: row.actor_name,
+		ownerName: row.owner_name,
+	}));
+}
+
+export function copyCursor(row: Pick<RecentCopy, "acceptedAt" | "id">): string {
+	return `${row.acceptedAt}|${row.id}`;
+}
+
 export async function pushForEdition(db: D1Database, editionId: string): Promise<GatewayPush | null> {
 	const row = await db
 		.prepare(

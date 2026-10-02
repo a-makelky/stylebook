@@ -16,51 +16,36 @@ export interface Who {
 	note: EditionNote | null;
 }
 
-async function reposNamed(env: Env, repoName: string): Promise<ArtifactsRepo[]> {
-	const found: ArtifactsRepo[] = [];
-	const primary = await getRepo(env.WORKSPACE, repoName);
-	if (primary) found.push(primary);
-	if (env.REVIEW !== env.WORKSPACE) {
-		const review = await getRepo(env.REVIEW, repoName);
-		if (review) found.push(review);
-	}
-	return found;
-}
-
 async function noteText(env: Env, repoName: string, edition: string): Promise<string | null> {
-	const repos = await reposNamed(env, repoName);
-	if (repos.length === 0) return null;
-	for (const repo of repos) {
-		const text = await noteOnRepo(env, repo, repoName, edition);
-		if (text) return text;
-	}
-	return null;
+	const repo = await getRepo(env.WORKSPACE, repoName);
+	if (!repo) return null;
+	return noteOnRepo(env, repo, repoName, edition);
 }
 
 async function noteOnRepo(env: Env, repo: ArtifactsRepo, repoName: string, edition: string): Promise<string | null> {
-	// readFile resolves a branch, a tag, or a commit id. A notes ref is none of
-	// those, so the commit id recorded for refs/notes/* is what the read uses.
+	// readFile resolves a branch, a tag, or a commit id. The notes ref name is
+	// none of those, so the commit id recorded for the latest notes push is
+	// what the read uses. That commit's tree holds every note, not only the
+	// newest one.
 	// https://developers.cloudflare.com/artifacts/concepts/best-practices/
-	const commits = await env.DB.prepare(
+	const commit = await env.DB.prepare(
 		`SELECT edition_id FROM gateway_pushes
      WHERE repo_name = ?1 AND ref_name = ?2
      ORDER BY id DESC
-     LIMIT 20`,
+     LIMIT 1`,
 	)
 		.bind(repoName, NOTES_REF)
-		.all<{ edition_id: string }>();
-	const refs = [NOTES_REF, ...(commits.results ?? []).map((row) => row.edition_id)];
+		.first<{ edition_id: string }>();
+	if (!commit) return null;
 	const paths = [edition, `${edition.slice(0, 2)}/${edition.slice(2)}`];
-	for (const ref of refs) {
-		for (const path of paths) {
-			try {
-				const blob = await repo.readFile({ ref, path });
-				if (!blob) continue;
-				const text = new TextDecoder().decode(new Uint8Array(await blob.arrayBuffer()));
-				if (text) return text;
-			} catch {
-				// A missing path throws. Try the other notes layout.
-			}
+	for (const path of paths) {
+		try {
+			const blob = await repo.readFile({ ref: commit.edition_id, path });
+			if (!blob) continue;
+			const text = new TextDecoder().decode(new Uint8Array(await blob.arrayBuffer()));
+			if (text) return text;
+		} catch {
+			// A missing path throws. Try the other notes layout.
 		}
 	}
 	return null;

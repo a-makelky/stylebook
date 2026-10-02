@@ -3,8 +3,9 @@
 // https://developers.cloudflare.com/artifacts/api/workers-binding/
 // https://developers.cloudflare.com/artifacts/concepts/best-practices/
 
+import { issueGrant } from "./access";
 import { allows, listActors, ownerOf, type Actor } from "./actors";
-import { recordPush } from "./audit";
+import { copyCursor, recentCopies } from "./audit";
 import {
 	changedSections,
 	combineChanges,
@@ -17,7 +18,7 @@ import {
 } from "./diff";
 import type { Env } from "./env";
 import { gatewayRemote } from "./gateway";
-import { NOTES_REF, publishPrepared, publishSavedEdition } from "./git";
+import { publishPrepared, publishSavedEdition } from "./git";
 import { editionNote } from "./notes";
 import { SAMPLE_FILES } from "./sample-files";
 import { whoPublished } from "./who";
@@ -28,7 +29,6 @@ import {
 	getRepo,
 	listEditions,
 	listPaths,
-	listRepoNames,
 	readBytes,
 	suggestionName,
 	type Edition,
@@ -106,6 +106,8 @@ export interface Desk {
 	conflict: DeskConflict | null;
 	history: DeskHistory[];
 	notice: string | null;
+	/** Set when older suggestions were not read on this load. */
+	more: string | null;
 }
 
 interface OpenSuggestion extends DeskSuggestion {
@@ -113,9 +115,9 @@ interface OpenSuggestion extends DeskSuggestion {
 	base: string;
 }
 
-function spaces(env: Env): Artifacts[] {
-	return env.REVIEW === env.WORKSPACE ? [env.REVIEW] : [env.REVIEW, env.WORKSPACE];
-}
+/** How many copies one load reads. Matches are drawn newest first, up to this many. */
+export const SUGGESTION_PAGE = 12;
+export const SUGGESTION_READS = 12;
 
 export function cleanPath(value: string | null): string | null {
 	if (!value || value.length > 200 || value.includes("..") || value.startsWith("/")) return null;
@@ -184,38 +186,18 @@ async function declinedKeys(env: Env, actorId: string): Promise<Set<string>> {
 }
 
 async function findRepo(env: Env, name: string): Promise<ArtifactsRepo | null> {
-	for (const workspace of spaces(env)) {
-		const repo = await getRepo(workspace, name);
-		if (repo) return repo;
-	}
-	return null;
-}
-
-/**
- * A short-lived write token for the review library.
- *
- * `/git/library.git` is the earlier workspace's library. This library lives
- * in the review workspace, so the screen writes its remote directly and
- * records the person in the same audit table the Git route uses.
- */
-async function reviewLibraryWrite(env: Env): Promise<{ remote: string; token: string }> {
-	const library = await ensureLibrary(env.REVIEW);
-	const [info, token] = await Promise.all([library.repo.info(), library.repo.createToken("write", 300)]);
-	return { remote: info.remote, token: token.plaintext };
+	return getRepo(env.WORKSPACE, name);
 }
 
 /** Publish the sample library as the first edition when the review library is empty. */
 export async function ensureSampleLibrary(env: Env, person: Actor, key: string, origin: string): Promise<void> {
 	if (!allows(person, LIBRARY, true)) return;
-	const library = await ensureLibrary(env.REVIEW);
+	const library = await ensureLibrary(env.WORKSPACE);
 	const existing = await listEditions(library.repo, 1);
 	if (existing.length > 0) return;
-	const access = await reviewLibraryWrite(env);
-	void key;
-	void origin;
 	const saved = await publishPrepared({
-		remote: access.remote,
-		token: access.token,
+		remote: gatewayRemote(origin, LIBRARY),
+		token: key,
 		author: { name: person.name, email: PERSON_EMAIL },
 		hasHistory: false,
 		prepare: async (tree) => {
@@ -228,20 +210,11 @@ export async function ensureSampleLibrary(env: Env, person: Actor, key: string, 
 			};
 		},
 	});
-	if ("edition" in saved) {
-		await recordPush(env.DB, {
-			repoName: LIBRARY,
-			refName: "refs/heads/main",
-			editionId: saved.edition,
-			actor: person,
-			owner: person,
-			acceptedAt: new Date().toISOString(),
-		});
-	}
+	void saved;
 }
 
 async function libraryFile(env: Env, path: string): Promise<{ text: string; editions: Edition[] }> {
-	const library = await ensureLibrary(env.REVIEW);
+	const library = await ensureLibrary(env.WORKSPACE);
 	const editions = await listEditions(library.repo, 1000);
 	const text = (await readText(library.repo, path)) ?? "";
 	return { text, editions };
@@ -253,6 +226,7 @@ async function readOpenSuggestion(
 	name: string,
 	path: string,
 	libraryText: string,
+	known: { actorId: string; actorName: string; ownerName: string } | null,
 ): Promise<OpenSuggestion | null> {
 	const repo = await getRepo(workspace, name);
 	if (!repo) return null;
@@ -263,54 +237,52 @@ async function readOpenSuggestion(
 	const parent = tip?.parents[0];
 	const parentText = parent ? await readText(repo, path, parent) : null;
 	const base = parentText ?? libraryText;
-	const who = tip ? await whoPublished(env, tip.hash) : null;
-	const why = who?.note?.intent ?? tip?.message ?? "A suggested change.";
-	const writer = who?.note?.actor ?? who?.actor.name ?? "Someone";
-	const owner = who?.note?.onBehalfOf ?? who?.owner.name ?? writer;
+	// The list uses the actor the Git route recorded and the message on the
+	// edition. Reading the note here would open every copy's note on each load.
+	const why = (tip?.message ?? "A suggested change.").replace(/\s+/g, " ").trim();
 	return {
 		name,
 		number: suggestionNumber(name),
-		writer,
-		owner,
+		writer: known?.actorName ?? "Someone",
+		owner: known?.ownerName ?? known?.actorName ?? "Someone",
 		why,
 		sections: changedSections(base, text),
 		combined: why.startsWith("Combined both changes"),
-		actorId: who?.actor.id ?? null,
+		actorId: known?.actorId ?? null,
 		text,
 		base,
 	};
 }
 
-async function openSuggestions(env: Env, actor: Actor, path: string, libraryText: string): Promise<OpenSuggestion[]> {
+async function openSuggestions(
+	env: Env,
+	actor: Actor,
+	path: string,
+	libraryText: string,
+	before: string | null,
+	pinned: string | null,
+): Promise<{ suggestions: OpenSuggestion[]; moreBefore: string | null }> {
 	const hidden = await declinedKeys(env, actor.id);
-	const seen = new Set<string>();
-	const pending: { workspace: Artifacts; name: string }[] = [];
-	for (const workspace of spaces(env)) {
-		let names: string[] = [];
-		try {
-			names = await listRepoNames(workspace);
-		} catch {
-			continue;
-		}
-		for (const name of names) {
-			if (!name.startsWith("sug-") || seen.has(name)) continue;
-			seen.add(name);
-			if (!allows(actor, name, false)) continue;
-			if (hidden.has(`${name}\n${path}`)) continue;
-			pending.push({ workspace, name });
-		}
-	}
+	const batch = await recentCopies(env.DB, before, SUGGESTION_READS + 1);
+	const hasExtra = batch.length > SUGGESTION_READS;
+	const rows = batch.slice(0, SUGGESTION_READS).filter(
+		(row) => allows(actor, row.repoName, false) && !hidden.has(`${row.repoName}\n${path}`),
+	);
 	const found: OpenSuggestion[] = [];
 	let cursor = 0;
-	const width = Math.min(8, pending.length);
+	const width = Math.min(8, rows.length);
 	await Promise.all(
 		Array.from({ length: width }, async () => {
-			while (cursor < pending.length) {
-				const item = pending[cursor];
+			while (cursor < rows.length) {
+				const row = rows[cursor];
 				cursor += 1;
-				if (!item) return;
+				if (!row) return;
 				try {
-					const suggestion = await readOpenSuggestion(env, item.workspace, item.name, path, libraryText);
+					const suggestion = await readOpenSuggestion(env, env.WORKSPACE, row.repoName, path, libraryText, {
+						actorId: row.actorId,
+						actorName: row.actorName,
+						ownerName: row.ownerName,
+					});
 					if (suggestion) found.push(suggestion);
 				} catch {
 					// One copy that cannot be read does not blank the desk.
@@ -318,14 +290,33 @@ async function openSuggestions(env: Env, actor: Actor, path: string, libraryText
 			}
 		}),
 	);
+	const order = new Map(rows.map((row, index) => [row.repoName, index]));
+	found.sort((a, b) => (order.get(a.name) ?? 0) - (order.get(b.name) ?? 0));
+	if (pinned && !found.some((entry) => entry.name === pinned)) {
+		try {
+			const suggestion = await readOpenSuggestion(env, env.WORKSPACE, pinned, path, libraryText, null);
+			if (suggestion && allows(actor, pinned, false) && !hidden.has(`${pinned}\n${path}`)) {
+				found.unshift(suggestion);
+			}
+		} catch {
+			// The requested copy is absent. The page still shows the rest.
+		}
+	}
 	// A combined copy's name ends in a random suffix, which is not a number a
 	// person should read. Number combined suggestions after the others.
 	let next = Math.max(0, ...found.filter((entry) => !entry.combined).map((entry) => entry.number));
 	for (const entry of found.filter((item) => item.combined).sort((a, b) => a.name.localeCompare(b.name))) {
 		entry.number = ++next;
 	}
-	found.sort((a, b) => a.number - b.number || a.name.localeCompare(b.name));
-	return found;
+	const moreBefore = hasExtra && rows.length > 0 ? copyCursor(rows[rows.length - 1]!) : null;
+	return { suggestions: found.slice(0, SUGGESTION_PAGE), moreBefore };
+}
+
+function olderHref(item: string | null, before: string): string {
+	const params = new URLSearchParams();
+	if (item) params.set("item", item);
+	params.set("before", before);
+	return `/?${params.toString()}`;
 }
 
 function overlapPairs(selected: OpenSuggestion, others: OpenSuggestion[], libraryText: string) {
@@ -367,18 +358,19 @@ function pageLines(libraryText: string, selected: OpenSuggestion | null, overlap
 
 async function historyOf(env: Env, editions: Edition[]): Promise<DeskHistory[]> {
 	const total = editions.length;
-	const lines: DeskHistory[] = [];
-	for (let index = 0; index < Math.min(editions.length, 20); index++) {
-		const edition = editions[index]!;
-		const who = await whoPublished(env, edition.id);
-		const approver = who?.actor.name ?? edition.author;
-		const writer = who?.note?.actor ?? null;
-		const owner = who?.note?.onBehalfOf ?? who?.owner.name ?? null;
-		lines.push({
-			number: total - index,
-			line: historyLine(approver, writer, owner, who?.actor ? edition.savedAt : edition.savedAt),
-		});
-	}
+	const shown = editions.slice(0, 12);
+	const lines = await Promise.all(
+		shown.map(async (edition, index) => {
+			const who = await whoPublished(env, edition.id);
+			const approver = who?.actor.name ?? edition.author;
+			const writer = who?.note?.actor ?? null;
+			const owner = who?.note?.onBehalfOf ?? who?.owner.name ?? null;
+			return {
+				number: total - index,
+				line: historyLine(approver, writer, owner, edition.savedAt),
+			};
+		}),
+	);
 	return lines;
 }
 
@@ -390,15 +382,16 @@ export async function loadDesk(
 	item: string | null,
 	suggestion: string | null,
 	notice: string | null,
+	before: string | null,
 ): Promise<Desk> {
 	await ensureSampleLibrary(env, actor, key, origin);
-	const library = await ensureLibrary(env.REVIEW);
+	const library = await ensureLibrary(env.WORKSPACE);
 	const paths = await listPaths(library.repo);
-	const items: DeskItem[] = [];
-	for (const path of paths) {
-		const text = (await readText(library.repo, path)) ?? "";
-		items.push({ path, title: titleOf(path, text), group: groupOf(path) });
-	}
+	const texts = await Promise.all(paths.map((path) => readText(library.repo, path)));
+	const items: DeskItem[] = paths.map((path, index) => {
+		const text = texts[index] ?? "";
+		return { path, title: titleOf(path, text), group: groupOf(path) };
+	});
 	const chosenPath =
 		(item && items.some((entry) => entry.path === item) ? item : null) ??
 		items.find((entry) => entry.path === "skills/interview-to-draft/SKILL.md")?.path ??
@@ -407,7 +400,10 @@ export async function loadDesk(
 	const { text: libraryText, editions } = chosenPath
 		? await libraryFile(env, chosenPath)
 		: { text: "", editions: await listEditions(library.repo, 1000) };
-	const suggestions = chosenPath ? await openSuggestions(env, actor, chosenPath, libraryText) : [];
+	const opened = chosenPath
+		? await openSuggestions(env, actor, chosenPath, libraryText, before, suggestion)
+		: { suggestions: [], moreBefore: null };
+	const suggestions = opened.suggestions;
 	const selected =
 		suggestions.find((entry) => entry.name === suggestion) ?? suggestions[0] ?? null;
 	const paired = selected
@@ -454,6 +450,7 @@ export async function loadDesk(
 		conflict: blocked,
 		history,
 		notice,
+		more: opened.moreBefore && chosenPath ? olderHref(chosenPath, opened.moreBefore) : null,
 	};
 }
 
@@ -479,14 +476,11 @@ async function writeLibrary(
 	message: string,
 	note: string | undefined,
 ): Promise<{ edition: string; noteCommit: string | null } | { stopped: string }> {
-	const library = await ensureLibrary(env.REVIEW);
+	const library = await ensureLibrary(env.WORKSPACE);
 	const editions = await listEditions(library.repo, 1);
-	const access = await reviewLibraryWrite(env);
-	void key;
-	void origin;
 	return publishPrepared({
-		remote: access.remote,
-		token: access.token,
+		remote: gatewayRemote(origin, LIBRARY),
+		token: key,
 		author: { name: person.name, email: PERSON_EMAIL },
 		hasHistory: editions.length > 0,
 		prepare: async (tree) => {
@@ -515,7 +509,7 @@ function publishedNotice(editionNumber: number): string {
 }
 
 async function editionCount(env: Env): Promise<number> {
-	const library = await ensureLibrary(env.REVIEW);
+	const library = await ensureLibrary(env.WORKSPACE);
 	return (await listEditions(library.repo, 1000)).length;
 }
 
@@ -531,7 +525,7 @@ export async function publishSuggestion(
 	if (!allows(person, LIBRARY, true)) throw new DeskError("This key cannot change the library.", 403);
 	await ensureSampleLibrary(env, person, key, origin);
 	const { text: libraryText } = await libraryFile(env, path);
-	const suggestions = await openSuggestions(env, person, path, libraryText);
+	const suggestions = (await openSuggestions(env, person, path, libraryText, null, name)).suggestions;
 	const selected = suggestions.find((entry) => entry.name === name);
 	if (!selected) throw new DeskError("That suggestion is not open.");
 	const { conflict } = overlapPairs(selected, suggestions, libraryText);
@@ -579,24 +573,6 @@ export async function publishSuggestion(
 		note,
 	);
 	if ("stopped" in saved) return saved.stopped;
-	await recordPush(env.DB, {
-		repoName: LIBRARY,
-		refName: "refs/heads/main",
-		editionId: saved.edition,
-		actor: person,
-		owner: person,
-		acceptedAt: new Date().toISOString(),
-	});
-	if (saved.noteCommit) {
-		await recordPush(env.DB, {
-			repoName: LIBRARY,
-			refName: NOTES_REF,
-			editionId: saved.noteCommit,
-			actor: person,
-			owner: person,
-			acceptedAt: new Date().toISOString(),
-		});
-	}
 	const count = await editionCount(env);
 	if (mode === "keep-this") return `Kept this one. ${publishedNotice(count)}`;
 	if (mode === "keep-other") return `Kept the other. ${publishedNotice(count)}`;
@@ -612,7 +588,7 @@ export async function combineSuggestions(
 ): Promise<string> {
 	if (!allows(person, LIBRARY, true)) throw new DeskError("This key cannot change the library.", 403);
 	const { text: libraryText } = await libraryFile(env, path);
-	const suggestions = await openSuggestions(env, person, path, libraryText);
+	const suggestions = (await openSuggestions(env, person, path, libraryText, null, name)).suggestions;
 	const selected = suggestions.find((entry) => entry.name === name);
 	if (!selected) throw new DeskError("That suggestion is not open.");
 	const { conflict } = overlapPairs(selected, suggestions, libraryText);
@@ -626,14 +602,13 @@ export async function combineSuggestions(
 	const copyName = suggestionName(agent.id, session);
 	if (!allows(agent, copyName, true)) throw new DeskError("This key cannot change that copy.", 403);
 
-	const library = await ensureLibrary(env.REVIEW);
-	const suggestion = await ensureSuggestion(env.REVIEW, library.repo, copyName);
-	const access = await suggestion.repo.createToken("write", 300);
-	const info = await suggestion.repo.info();
+	const library = await ensureLibrary(env.WORKSPACE);
+	await ensureSuggestion(env.WORKSPACE, library.repo, copyName);
+	const grant = await issueGrant(env.DB, agent, copyName, true, 300);
 	const why = `Combined both changes, in order, from Suggestion ${selected.number} and Suggestion ${secondNumber}.`;
 	const saved = await publishSavedEdition({
-		remote: info.remote,
-		token: access.plaintext,
+		remote: gatewayRemote(origin, copyName),
+		token: grant,
 		path,
 		content: combined,
 		message: why,
@@ -649,26 +624,7 @@ export async function combineSuggestions(
 			}),
 		},
 	});
-	const acceptedAt = new Date().toISOString();
-	await recordPush(env.DB, {
-		repoName: copyName,
-		refName: "refs/heads/main",
-		editionId: saved.edition,
-		actor: agent,
-		owner,
-		acceptedAt,
-	});
-	if (saved.noteCommit) {
-		await recordPush(env.DB, {
-			repoName: copyName,
-			refName: NOTES_REF,
-			editionId: saved.noteCommit,
-			actor: agent,
-			owner,
-			acceptedAt,
-		});
-	}
-	void origin;
+	void saved;
 	return copyName;
 }
 
@@ -698,10 +654,10 @@ export async function saveAgentSuggestion(
 	const owner = await ownerOf(env.DB, agent);
 	const name = suggestionName(agent.id, input.session);
 	if (!allows(agent, name, true)) throw new DeskError("This key cannot change that copy.", 403);
-	const library = await ensureLibrary(env.REVIEW);
+	const library = await ensureLibrary(env.WORKSPACE);
 	const existing = await listEditions(library.repo, 1);
 	if (existing.length === 0) throw new DeskError("The library has no edition yet.");
-	await ensureSuggestion(env.REVIEW, library.repo, name);
+	await ensureSuggestion(env.WORKSPACE, library.repo, name);
 	const saved = await publishSavedEdition({
 		remote: gatewayRemote(origin, name),
 		token: key,

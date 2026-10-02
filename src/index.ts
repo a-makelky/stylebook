@@ -1,4 +1,7 @@
+import { handleAccess } from "./access";
 import { listActors, registerActor, actorByKey, type ActorInput } from "./actors";
+import { seedOpenSuggestions } from "./demo-seed";
+import { handleMcp } from "./mcp";
 import { actorFromRequest } from "./auth";
 import { auditSince, isUnseen } from "./audit";
 import { publishDirect } from "./bypass";
@@ -54,6 +57,24 @@ export default {
 
 		if (request.method === "GET" && url.pathname === "/health") {
 			return json({ ok: true, name: "stylebook" });
+		}
+
+		if (url.pathname === "/mcp") {
+			try {
+				return await handleMcp(request, env);
+			} catch (error) {
+				const failure = describeError(error);
+				return json(sanitize({ ok: false, error: failure.message, code: failure.code }), 500);
+			}
+		}
+
+		if (url.pathname === "/git/access") {
+			try {
+				return await handleAccess(request, env);
+			} catch (error) {
+				const failure = describeError(error);
+				return json(sanitize({ ok: false, error: failure.message, code: failure.code }), 500);
+			}
 		}
 
 		const screen = await handleScreen(request, env);
@@ -138,6 +159,29 @@ export default {
 					await new Promise((resolve) => setTimeout(resolve, 2000));
 				}
 				return json(sanitize({ ok: flagged, name: pushed.name, edition: pushed.edition, ref: refName, flagged }));
+			} catch (error) {
+				const failure = describeError(error);
+				return json(sanitize({ ok: false, error: failure.message, code: failure.code }), 500);
+			}
+		}
+
+		if (request.method === "POST" && url.pathname === "/demo/seed") {
+			const denied = checkDemoKey(request, env);
+			if (denied) return denied;
+			const body = (await request.json().catch(() => ({}))) as {
+				personKey?: unknown;
+				researcherKey?: unknown;
+				proofreaderKey?: unknown;
+			};
+			const personKey = typeof body.personKey === "string" ? body.personKey : "";
+			const researcherKey = typeof body.researcherKey === "string" ? body.researcherKey : "";
+			const proofreaderKey = typeof body.proofreaderKey === "string" ? body.proofreaderKey : "";
+			if (!personKey || !researcherKey || !proofreaderKey) {
+				return json({ ok: false, error: "A person key and two agent keys are required." }, 400);
+			}
+			try {
+				const report = await seedOpenSuggestions(env, url.origin, { personKey, researcherKey, proofreaderKey });
+				return json(sanitize(report));
 			} catch (error) {
 				const failure = describeError(error);
 				return json(sanitize({ ok: false, error: failure.message, code: failure.code }), 500);

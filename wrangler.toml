@@ -1,6 +1,10 @@
 name = "stylebook"
 main = "src/index.ts"
 compatibility_date = "2026-09-01"
+# A custom domain otherwise turns the workers.dev hostname off.
+# https://developers.cloudflare.com/workers/configuration/routing/workers-dev/
+workers_dev = true
+preview_urls = true
 # global_fetch_strictly_public: a fetch from this Worker to its own host is
 # another Worker on the same zone. Without this flag that fetch returns 1042.
 # With it, the fetch comes back in through the public front door, which is how
@@ -11,19 +15,19 @@ compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 
 # One Artifacts namespace is one workspace. The library and every suggestion
 # copy live in it, because a copy made with fork() stays in its source namespace.
-[[artifacts]]
-binding = "WORKSPACE"
-namespace = "stylebook-demo"
-remote = true # local dev talks to the real Artifacts service
-
-# The review screen's library. fork() keeps a copy in the source namespace, so
-# the suggestion copies from earlier runs stay in stylebook-demo. This
-# namespace starts empty and its first edition is the sample library.
+# stylebook-demo is an earlier workspace and is not bound.
+# https://developers.cloudflare.com/artifacts/concepts/namespaces/
 # https://developers.cloudflare.com/artifacts/concepts/best-practices/
 [[artifacts]]
-binding = "REVIEW"
+binding = "WORKSPACE"
 namespace = "stylebook-review"
-remote = true
+remote = true # local dev talks to the real Artifacts service
+
+# Demo address. Remove this block when the domain is not in your account.
+# https://developers.cloudflare.com/workers/configuration/routing/custom-domains/
+[[routes]]
+pattern = "stylebook.dev"
+custom_domain = true
 
 # Arrival rows. The database id is the D1 database, not an account id.
 [[d1_databases]]
@@ -54,15 +58,19 @@ class_name = "ArrivalWorkflow"
 type = "cf.artifacts.repo.pushed"
 
   [triggers.events.filter]
-  namespace = "stylebook-demo"
+  namespace = "stylebook-review"
 
   [[triggers.events.targets]]
   type = "workflow"
   workflow_name = "stylebook-arrival"
 
 # Polling 100 session instances needs more subrequests than the default.
+# Seeding several copies in one request needs more CPU than the default 30s.
+# https://developers.cloudflare.com/workers/platform/limits/#cpu-time
+# https://developers.cloudflare.com/workers/platform/limits/#subrequests
 [limits]
 subrequests = 10000
+cpu_ms = 300000
 
 [observability]
 enabled = true
