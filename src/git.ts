@@ -147,3 +147,120 @@ export async function publishFile(input: PublishInput): Promise<string> {
 	const saved = await publishSavedEdition(input);
 	return saved.edition;
 }
+
+export interface PreparedFile {
+	path: string;
+	content: string;
+}
+
+export interface PrepareContext {
+	tip: string | null;
+	read(path: string): Promise<string | null>;
+}
+
+export type PrepareOutcome = { files: PreparedFile[]; message: string; note?: string } | { stop: string };
+
+const PUBLISH_ATTEMPTS = 3;
+
+function raced(reason: string): boolean {
+	return /non-fast-forward|rejected|cannot lock|failed to lock|failed to push|failed to update ref|not updated/i.test(
+		reason,
+	);
+}
+
+/**
+ * Clone the current edition, decide the files from that edition, then send.
+ * If another publish lands first, the send is refused and the whole step runs
+ * again against the new edition. A `stop` result sends nothing.
+ */
+export async function publishPrepared(input: {
+	remote: string;
+	token: string;
+	author: Author;
+	hasHistory: boolean;
+	prepare: (tree: PrepareContext) => Promise<PrepareOutcome>;
+}): Promise<{ edition: string; noteCommit: string | null } | { stopped: string }> {
+	let history = input.hasHistory;
+	for (let attempt = 1; attempt <= PUBLISH_ATTEMPTS; attempt++) {
+		const dir = "/work";
+		const fs = new MemoryFS();
+		const onAuth = auth(input.token);
+		if (history) {
+			await git.clone({
+				fs,
+				http,
+				dir,
+				url: input.remote,
+				ref: "main",
+				singleBranch: true,
+				depth: 1,
+				onAuth,
+				headers: gitHeaders(),
+			});
+		} else {
+			await git.init({ fs, dir, defaultBranch: "main" });
+		}
+		let tip: string | null = null;
+		if (history) {
+			try {
+				tip = await git.resolveRef({ fs, dir, ref: "HEAD" });
+			} catch {
+				tip = null;
+			}
+		}
+		const prepared = await input.prepare({
+			tip,
+			async read(path: string) {
+				try {
+					const data = await fs.promises.readFile(`${dir}/${path}`, "utf8");
+					return typeof data === "string" ? data : new TextDecoder().decode(data as Uint8Array);
+				} catch {
+					return null;
+				}
+			},
+		});
+		if ("stop" in prepared) return { stopped: prepared.stop };
+
+		for (const file of prepared.files) {
+			await fs.promises.writeFile(`${dir}/${file.path}`, file.content);
+			await git.add({ fs, dir, filepath: file.path });
+		}
+		const edition = await git.commit({
+			fs,
+			dir,
+			message: prepared.message,
+			author: input.author,
+		});
+		let noteCommit: string | null = null;
+		if (prepared.note) {
+			noteCommit = await git.addNote({
+				fs,
+				dir,
+				oid: edition,
+				ref: NOTES_REF,
+				note: prepared.note,
+				author: input.author,
+				force: true,
+			});
+		}
+		try {
+			await pushRef(fs, input.remote, "main", onAuth);
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			if (attempt < PUBLISH_ATTEMPTS && raced(reason)) {
+				history = true;
+				continue;
+			}
+			throw error;
+		}
+		if (noteCommit) {
+			try {
+				await pushRef(fs, input.remote, NOTES_REF, onAuth);
+			} catch {
+				noteCommit = null;
+			}
+		}
+		return { edition, noteCommit };
+	}
+	return { stopped: "The library changed while this was publishing. Nothing was lost. Try again." };
+}

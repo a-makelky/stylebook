@@ -219,6 +219,38 @@ export interface Edition {
 	savedAt: string;
 }
 
+/** Every repo name in the workspace. The binding pages with a cursor. */
+export async function listRepoNames(workspace: Artifacts): Promise<string[]> {
+	const names: string[] = [];
+	let cursor: string | undefined;
+	for (let page = 0; page < 20; page++) {
+		const result = await workspace.list({ limit: 200, cursor });
+		for (const repo of result.repos) names.push(repo.name);
+		if (!result.cursor) break;
+		cursor = result.cursor;
+	}
+	return names;
+}
+
+/** Paths of the files at one edition. Directories are walked with readTree. */
+export async function listPaths(repo: ArtifactsRepo, ref = DEFAULT_BRANCH): Promise<string[]> {
+	const commits = await repo.log({ ref, limit: 1 });
+	const tip = commits[0];
+	if (!tip) return [];
+	const paths: string[] = [];
+	async function walk(hash: string, prefix: string): Promise<void> {
+		const entries = await repo.readTree(hash);
+		if (!entries) return;
+		for (const entry of entries) {
+			const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+			if (entry.type === "tree") await walk(entry.hash, path);
+			else if (entry.type === "blob" || entry.type === "exec") paths.push(path);
+		}
+	}
+	await walk(tip.treeHash, "");
+	return paths.sort();
+}
+
 /** A repo's editions, newest first. */
 export async function listEditions(
 	repo: ArtifactsRepo,

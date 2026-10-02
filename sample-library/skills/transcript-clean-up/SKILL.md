@@ -21,5 +21,5 @@ Ask for the recording's length and the names of everyone who speaks.
 ## Never
 
 - Change the meaning of an answer.
-- Merge two answers into one.
+- Join two answers into one.
 - Remove a pause or a hesitation that matters to what was said. Write [long pause] instead.

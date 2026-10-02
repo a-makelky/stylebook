@@ -1,9 +1,11 @@
 import { listActors, registerActor, actorByKey, type ActorInput } from "./actors";
+import { actorFromRequest } from "./auth";
 import { auditSince, isUnseen } from "./audit";
 import { publishDirect } from "./bypass";
 import type { Env } from "./env";
 import { handleGit } from "./gateway";
 import { sanitize, describeError } from "./redact";
+import { handleScreen } from "./screen";
 import { d1ArrivalLog, d1AuditLog, runSwarm, workflowLauncher, MAX_SESSIONS } from "./swarm";
 import { runTracer } from "./tracer";
 import { whoPublished } from "./who";
@@ -46,18 +48,6 @@ function checkDemoKey(request: Request, env: Env): Response | null {
 	return null;
 }
 
-/** The demo key or any registered actor key. Returns a response when the caller is refused. */
-async function demoOrActor(request: Request, env: Env): Promise<Response | null> {
-	if (!env.DEMO_KEY) {
-		return json({ ok: false, error: "The DEMO_KEY secret is not set on this Worker." }, 503);
-	}
-	const header = request.headers.get("Authorization") ?? "";
-	const sent = header.startsWith("Bearer ") ? header.slice(7) : "";
-	if (sent && sameString(sent, env.DEMO_KEY)) return null;
-	if (sent && (await actorByKey(env.DB, sent))) return null;
-	return json({ ok: false, error: "Missing or unknown key." }, 401);
-}
-
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		const url = new URL(request.url);
@@ -65,6 +55,9 @@ export default {
 		if (request.method === "GET" && url.pathname === "/health") {
 			return json({ ok: true, name: "stylebook" });
 		}
+
+		const screen = await handleScreen(request, env);
+		if (screen) return screen;
 
 		if (url.pathname.startsWith("/git/")) {
 			try {
@@ -76,8 +69,8 @@ export default {
 		}
 
 		if (request.method === "GET" && url.pathname === "/who") {
-			const allowed = await demoOrActor(request, env);
-			if (allowed) return allowed;
+			const signedIn = await actorFromRequest(request, env);
+			if (!signedIn) return json({ ok: false, error: "Missing or unknown key." }, 401);
 			const edition = url.searchParams.get("edition") ?? "";
 			if (!/^[0-9a-f]{40}$/i.test(edition)) {
 				return json({ ok: false, error: "edition must be an edition id." }, 400);
