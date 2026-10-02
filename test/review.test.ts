@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { registerActor } from "../src/actors";
-import { changedSections, combineChanges, merge3, sameLinesConflict } from "../src/diff";
+import { changedSections, combineChanges, merge3, proofLines, sameLinesConflict, withOverlapMarks } from "../src/diff";
 import type { Env } from "../src/env";
 import worker from "../src/index";
 import { STARTER_SKILL, STARTER_SKILL_PATH } from "../src/seed";
@@ -60,6 +60,45 @@ describe("compare and combine", () => {
 		expect(first).toBeGreaterThan(-1);
 		expect(second).toBeGreaterThan(first);
 		expect(combined.indexOf("## Steps")).toBeLessThan(first);
+	});
+
+	it("combines the contested line and keeps every other line once", () => {
+		const combined = combineChanges(STARTER_SKILL, left, right);
+		const count = (needle: string) => combined.split(needle).length - 1;
+		expect(count("## Steps")).toBe(1);
+		expect(count("## Never")).toBe(1);
+		expect(combined).not.toContain(step);
+		const stepLines = combined.split("\n").filter((line) => line.startsWith("1. "));
+		expect(stepLines).toEqual([
+			"1. Read the whole transcript, including the small talk, before writing anything.",
+			"1. Read the whole transcript twice before writing anything.",
+		]);
+		// Every other library line survives exactly once.
+		for (const line of STARTER_SKILL.split("\n")) {
+			if (line.trim() === "" || line === step) continue;
+			expect(count(line), line).toBeGreaterThanOrEqual(1);
+		}
+		expect(combined.length).toBeLessThan(STARTER_SKILL.length + 200);
+	});
+
+	it("combines changes to different lines the same way a clean publish would", () => {
+		const clean = merge3(STARTER_SKILL, left, added);
+		expect(clean.ok).toBe(true);
+		if (clean.ok) expect(combineChanges(STARTER_SKILL, left, added)).toBe(clean.text);
+	});
+
+	it("draws the other suggestion's marks next to the line they change", () => {
+		const page = proofLines(STARTER_SKILL, left, "blue", 1);
+		const marked = withOverlapMarks(page, STARTER_SKILL, right, 2, ["Steps"]);
+		const blueIns = marked.findIndex((line) => line.kind === "ins" && line.tone === "blue");
+		const redDel = marked.findIndex((line) => line.kind === "del" && line.tone === "red");
+		const redIns = marked.findIndex((line) => line.kind === "ins" && line.tone === "red");
+		expect(blueIns).toBeGreaterThan(-1);
+		expect(redDel).toBe(blueIns + 1);
+		expect(redIns).toBe(redDel + 1);
+		const stepIndex = STARTER_SKILL.split("\n").indexOf(step);
+		const nextText = marked.findIndex((line) => line.kind === "text" && (line.base ?? -1) > stepIndex);
+		expect(redIns).toBe(nextText - 1);
 	});
 });
 
