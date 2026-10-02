@@ -23,6 +23,8 @@ export interface ProofLine {
 	tone?: Pencil;
 	number?: number;
 	section: string | null;
+	/** Line index in the library text. For an inserted line, the library line it goes before. */
+	base?: number;
 }
 
 interface Hunk {
@@ -228,56 +230,69 @@ export function sameLinesConflict(base: string, left: string, right: string): bo
 	return !merge3(base, left, right).ok;
 }
 
-function sectionBody(text: string, name: string): string | null {
-	const section = sectionsOf(text).find((item) => item.name === name);
-	if (!section) return null;
-	const lines = linesOf(text).slice(section.start, section.end);
-	return `${lines.join("\n")}\n`;
-}
-
-function replaceSection(text: string, name: string, replacement: string): string {
-	const section = sectionsOf(text).find((item) => item.name === name);
-	const block = replacement.endsWith("\n") ? replacement : `${replacement}\n`;
-	if (!section) {
-		const trimmed = text.replace(/\s*$/, "\n");
-		return `${trimmed}\n${block}`;
+function applyWithin(base: string[], chosen: Hunk[], start: number, end: number): string[] {
+	const out: string[] = [];
+	let cursor = start;
+	for (const hunk of chosen) {
+		if (hunk.baseStart > cursor) out.push(...base.slice(cursor, hunk.baseStart));
+		out.push(...hunk.lines);
+		cursor = Math.max(cursor, hunk.baseEnd);
 	}
-	const lines = linesOf(text);
-	const next = [...lines.slice(0, section.start), ...linesOf(block), ...lines.slice(section.end)];
-	return finish(next, text.endsWith("\n") ? text : `${text}\n`);
+	if (end > cursor) out.push(...base.slice(cursor, end));
+	return out;
 }
 
 /**
- * Keep both changes. When each suggestion changes a different section, both
- * sections are taken. When both change one section, that section is kept twice,
- * the first suggestion then the second.
+ * Keep both changes. Changes to different lines are both applied, as in a
+ * clean publish. Where both suggestions change the same lines, the first
+ * suggestion's version of those lines comes first and the second's follows,
+ * without repeating a line both already share. Everything else appears once.
  *
  * Seam: a hosted model is not called. A real agent would replace this function
  * and leave the callers as they are.
  */
 export function combineChanges(library: string, first: string, second: string): string {
-	const names: string[] = [];
-	for (const text of [library, first, second]) {
-		for (const section of sectionsOf(text)) {
-			if (!names.includes(section.name)) names.push(section.name);
+	const clean = merge3(library, first, second);
+	if (clean.ok) return clean.text;
+
+	const base = linesOf(library);
+	const tagged = [
+		...hunks(base, linesOf(first)).map((hunk) => ({ hunk, side: 0 as const })),
+		...hunks(base, linesOf(second)).map((hunk) => ({ hunk, side: 1 as const })),
+	].sort((a, b) => a.hunk.baseStart - b.hunk.baseStart || a.hunk.baseEnd - b.hunk.baseEnd);
+
+	// Group hunks that touch the same library lines.
+	const groups: { start: number; end: number; items: typeof tagged }[] = [];
+	for (const item of tagged) {
+		const last = groups[groups.length - 1];
+		if (last && (item.hunk.baseStart < last.end || item.hunk.baseStart === last.start)) {
+			last.end = Math.max(last.end, item.hunk.baseEnd);
+			last.items.push(item);
+		} else {
+			groups.push({ start: item.hunk.baseStart, end: item.hunk.baseEnd, items: [item] });
 		}
 	}
-	let result = library.endsWith("\n") || library === "" ? library : `${library}\n`;
-	for (const name of names) {
-		const base = sectionBody(library, name);
-		const left = sectionBody(first, name);
-		const right = sectionBody(second, name);
-		const leftChanged = left !== null && left !== base;
-		const rightChanged = right !== null && right !== base;
-		if (leftChanged && rightChanged && left !== right) {
-			result = replaceSection(result, name, `${left!.replace(/\s*$/, "\n")}\n${right}`);
-		} else if (leftChanged && left) {
-			result = replaceSection(result, name, left);
-		} else if (rightChanged && right) {
-			result = replaceSection(result, name, right);
+
+	const out: string[] = [];
+	let cursor = 0;
+	for (const group of groups) {
+		out.push(...base.slice(cursor, group.start));
+		const firstHunks = group.items.filter((item) => item.side === 0).map((item) => item.hunk);
+		const secondHunks = group.items.filter((item) => item.side === 1).map((item) => item.hunk);
+		const firstLines = applyWithin(base, firstHunks, group.start, group.end);
+		if (secondHunks.length === 0) {
+			out.push(...firstLines);
+		} else if (firstHunks.length === 0) {
+			out.push(...applyWithin(base, secondHunks, group.start, group.end));
+		} else {
+			const seen = new Set(firstLines.filter((line) => line.trim() !== ""));
+			out.push(...firstLines);
+			out.push(...applyWithin(base, secondHunks, group.start, group.end).filter((line) => !seen.has(line)));
 		}
+		cursor = Math.max(cursor, group.end);
 	}
-	return result;
+	out.push(...base.slice(cursor));
+	return finish(out, library.endsWith("\n") ? library : `${library}\n`);
 }
 
 export function proofLines(library: string, selected: string, tone: Pencil, number: number): ProofLine[] {
@@ -288,7 +303,7 @@ export function proofLines(library: string, selected: string, tone: Pencil, numb
 	let nextIndex = 0;
 	for (const part of diffArrays(linesOf(library), linesOf(selected))) {
 		if (part.kind === "same") {
-			lines.push({ text: part.text, kind: "text", section: sectionAt(before, baseIndex) });
+			lines.push({ text: part.text, kind: "text", section: sectionAt(before, baseIndex), base: baseIndex });
 			baseIndex++;
 			nextIndex++;
 		} else if (part.kind === "del") {
@@ -298,6 +313,7 @@ export function proofLines(library: string, selected: string, tone: Pencil, numb
 				tone,
 				number,
 				section: sectionAt(before, baseIndex),
+				base: baseIndex,
 			});
 			baseIndex++;
 		} else {
@@ -307,6 +323,7 @@ export function proofLines(library: string, selected: string, tone: Pencil, numb
 				tone,
 				number,
 				section: sectionAt(after, nextIndex),
+				base: baseIndex,
 			});
 			nextIndex++;
 		}
@@ -314,7 +331,12 @@ export function proofLines(library: string, selected: string, tone: Pencil, numb
 	return lines;
 }
 
-/** Red marks for another suggestion, drawn only in the sections both change. */
+/**
+ * Red marks for another suggestion, drawn only in the sections both change,
+ * next to the library line each one changes. A red deletion of a line the
+ * page shows unchanged replaces that line; everything else goes just before
+ * the next unchanged library line, after any blue marks at the same place.
+ */
 export function withOverlapMarks(
 	page: ProofLine[],
 	library: string,
@@ -328,14 +350,19 @@ export function withOverlapMarks(
 	);
 	if (extra.length === 0) return page;
 	const out = [...page];
-	for (const section of sections) {
-		let last = -1;
-		for (let index = 0; index < out.length; index++) {
-			if (out[index]?.section === section) last = index;
+	for (const mark of extra) {
+		const base = mark.base ?? Number.MAX_SAFE_INTEGER;
+		if (mark.kind === "del") {
+			const same = out.findIndex((line) => line.kind === "text" && line.base === base);
+			if (same !== -1) {
+				out[same] = mark;
+				continue;
+			}
 		}
-		const marks = extra.filter((line) => line.section === section);
-		if (last === -1) out.push(...marks);
-		else out.splice(last + 1, 0, ...marks);
+		const after = mark.kind === "del" ? base + 1 : base;
+		const next = out.findIndex((line) => line.kind === "text" && (line.base ?? -1) >= after);
+		if (next === -1) out.push(mark);
+		else out.splice(next, 0, mark);
 	}
 	return out;
 }
