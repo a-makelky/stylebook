@@ -355,6 +355,26 @@ describe("workspaces, sign-in, invites and agents", () => {
 		env.MAX_OPEN_SUGGESTIONS = "200";
 	}, 60_000);
 
+	it("says the email could not be sent when sending fails", async () => {
+		const original = env.EMAIL;
+		env.EMAIL = {
+			async send() {
+				throw new Error("domain");
+			},
+		};
+		try {
+			const response = await fetch(`${origin}/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/x-www-form-urlencoded" },
+				body: "workspace=Broken&email=broken@stylebook.invalid",
+			});
+			expect(response.status).toBe(503);
+			expect(await response.text()).toContain("could not be sent");
+		} finally {
+			env.EMAIL = original;
+		}
+	});
+
 	it("expires a sign-in link", async () => {
 		const email = "expires@stylebook.invalid";
 		await fetch(`${origin}/start`, {

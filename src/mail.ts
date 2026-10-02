@@ -93,15 +93,17 @@ export interface LinkDraft {
 const SENT = "Check your inbox. The link works once and expires in 15 minutes.";
 
 /** Count an attempt that does not send, so an unknown address looks the same. */
-export async function noteSignInAttempt(
-	env: Env,
-	request: Request,
-	email: string,
-): Promise<{ ok: true; message: string } | { ok: false; message: string }> {
+export type SendResult =
+	| { ok: true; message: string }
+	| { ok: false; message: string; status: number };
+
+export async function noteSignInAttempt(env: Env, request: Request, email: string): Promise<SendResult> {
 	const normalized = normalizeEmail(email);
-	if (!normalized) return { ok: false, message: "Enter an email address." };
+	if (!normalized) return { ok: false, message: "Enter an email address.", status: 400 };
 	const ip = clientIp(request);
-	if (!(await withinSignInLimit(env, normalized, ip))) return { ok: false, message: LIMIT_MESSAGE.signIn };
+	if (!(await withinSignInLimit(env, normalized, ip))) {
+		return { ok: false, message: LIMIT_MESSAGE.signIn, status: 429 };
+	}
 	await env.DB.prepare(`INSERT INTO sign_in_sends (email, ip, sent_at) VALUES (?1, ?2, ?3)`)
 		.bind(normalized, ip, new Date().toISOString())
 		.run();
@@ -113,14 +115,14 @@ export async function issueSignInLink(
 	request: Request,
 	origin: string,
 	draft: LinkDraft,
-): Promise<{ ok: true; message: string } | { ok: false; message: string }> {
+): Promise<SendResult> {
 	const email = normalizeEmail(draft.email);
-	if (!email) return { ok: false, message: "Enter an email address." };
+	if (!email) return { ok: false, message: "Enter an email address.", status: 400 };
 	const ip = clientIp(request);
 	if (!(await withinSignInLimit(env, email, ip))) {
-		return { ok: false, message: LIMIT_MESSAGE.signIn };
+		return { ok: false, message: LIMIT_MESSAGE.signIn, status: 429 };
 	}
-	if (!env.EMAIL) return { ok: false, message: "Sign-in email is not ready yet." };
+	if (!env.EMAIL) return { ok: false, message: "Sign-in email is not ready yet.", status: 503 };
 
 	const secret = randomSecret();
 	const now = new Date();
@@ -156,7 +158,7 @@ export async function issueSignInLink(
 			html: message.html,
 		});
 	} catch {
-		return { ok: false, message: "The sign-in email could not be sent. Try again in a little while." };
+		return { ok: false, message: "The sign-in email could not be sent. Try again in a little while.", status: 503 };
 	}
 	return { ok: true, message: SENT };
 }

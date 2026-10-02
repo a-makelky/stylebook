@@ -526,7 +526,7 @@ export async function handleScreen(request: Request, env: Env): Promise<Response
 				purpose: "start",
 				workspaceName: workspace,
 			});
-			return html(renderGate(sent.message, sent.ok ? "ok" : "error"), sent.ok ? 200 : 429);
+			return html(renderGate(sent.message, sent.ok ? "ok" : "error"), sent.ok ? 200 : sent.status);
 		}
 
 		if (request.method === "POST" && path === "/sign-in") {
@@ -537,8 +537,7 @@ export async function handleScreen(request: Request, env: Env): Promise<Response
 				homes.length === 0
 					? await noteSignInAttempt(env, request, email)
 					: await issueSignInLink(env, request, url.origin, { email, purpose: "sign-in" });
-			const status = sent.ok ? 200 : sent.message === "Enter an email address." ? 400 : 429;
-			return html(renderGate(sent.message, sent.ok ? "ok" : "error"), status);
+			return html(renderGate(sent.message, sent.ok ? "ok" : "error"), sent.ok ? 200 : sent.status);
 		}
 
 		if (request.method === "POST" && path === "/choose") {
