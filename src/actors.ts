@@ -22,7 +22,10 @@ export interface ActorInput {
 	key: string;
 }
 
-const ID_PATTERN = /^[a-z][a-z0-9-]{0,23}$/;
+// No hyphens: a copy is named `sug-<actor>-<session>`, and the session part
+// may contain hyphens, so an actor id with a hyphen could match the start of
+// another actor's copies ("a" would own "sug-a-b-1", which belongs to "a-b").
+const ID_PATTERN = /^[a-z][a-z0-9]{0,23}$/;
 
 export async function hashKey(key: string): Promise<string> {
 	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
@@ -101,7 +104,7 @@ function cleanName(name: string): string {
 }
 
 export async function registerActor(db: D1Database, input: ActorInput): Promise<Actor> {
-	if (!ID_PATTERN.test(input.id)) throw new Error("Actor id must be a short lowercase name.");
+	if (!ID_PATTERN.test(input.id)) throw new Error("Actor id must be a short lowercase name of letters and digits.");
 	const name = cleanName(input.name);
 	if (!name || name.length > 80) throw new Error("Actor name must be a short line.");
 	if (input.kind !== "person" && input.kind !== "agent") throw new Error("Actor kind must be person or agent.");

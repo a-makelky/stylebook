@@ -72,6 +72,19 @@ describe("who may use a copy", () => {
 		expect(allows(editor, suggestionName("cursor", "one"), true)).toBe(false);
 	});
 
+	it("does not let one actor id open copies whose actor id merely starts with it", async () => {
+		const agentA: Actor = { id: "a", kind: "agent", name: "A", ownerId: "editor", model: "m" };
+		expect(allows(agentA, "sug-a-run-001", true)).toBe(true);
+		expect(allows(agentA, "sug-a-b-run-001", true)).toBe(true);
+		const agentAB: Actor = { id: "a-b", kind: "agent", name: "AB", ownerId: "editor", model: "m" };
+		expect(allows(agentAB, "sug-a-b-run-001", true)).toBe(false);
+		const db = memoryD1();
+		await registerActor(db, { id: "editor", kind: "person", name: "Editor", key: PERSON_KEY });
+		await expect(
+			registerActor(db, { id: "a-b", kind: "agent", name: "AB", ownerId: "editor", model: "m", key: CURSOR_KEY }),
+		).rejects.toThrow(/letters and digits/);
+	});
+
 	it("parses a receive-pack command and ignores a rejected ref", () => {
 		const body = concat([
 			pkt(`${ZERO} ${SHA} refs/heads/main\0 report-status\n`),
