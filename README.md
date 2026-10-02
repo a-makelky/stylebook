@@ -38,6 +38,8 @@ npm install
 npx wrangler login
 ```
 
+`npx wrangler whoami` should say you are logged in. If `CLOUDFLARE_API_TOKEN` is already set, Wrangler reads it and the browser login can be skipped.
+
 Create the database that records arrivals, unless `wrangler.toml` already points at one in your account:
 
 ```sh
@@ -50,13 +52,17 @@ If the name is already taken, the database exists. Read its id:
 npx wrangler d1 info stylebook
 ```
 
-When that id differs from `database_id` under `[[d1_databases]]` in `wrangler.toml`, replace the value in the file with the id just printed. Then apply the migrations:
+When that id differs from `database_id` under `[[d1_databases]]` in `wrangler.toml`, replace the value in the file with the id just printed. The snippet Wrangler prints uses a binding name taken from the database name. Leave `binding = "DB"`. The Worker reads that name. If you created the database under a name other than `stylebook`, set `database_name` to that name as well. Then apply the migrations, using that database name:
 
 ```sh
 npx wrangler d1 migrations apply stylebook --remote
 ```
 
-The workspace name in `wrangler.toml` is `stylebook-review`. One workspace holds the library and every suggestion copy, because a copy made with `fork()` stays in the namespace it was made from. If that namespace does not exist yet, Artifacts creates it when the first copy is created. See [Namespaces](https://developers.cloudflare.com/artifacts/concepts/namespaces/).
+The command asks before it applies. A session with no prompt continues.
+
+The workspace name in `wrangler.toml` is `stylebook-review`. It is set in two places that have to match: `namespace` under `[[artifacts]]`, and `namespace` under `[triggers.events.filter]`. One workspace holds the library and every suggestion copy, because a copy made with `fork()` stays in the namespace it was made from. If that namespace does not exist yet, Artifacts creates it when the first copy is created. See [Namespaces](https://developers.cloudflare.com/artifacts/concepts/namespaces/). To use a new workspace, change both namespace lines to the same new name.
+
+`name` at the top of `wrangler.toml` is the Worker. Deploy updates the Worker of that name. The two `name` values under `[[workflows]]`, and `workflow_name` under the trigger, have to be unique in the account. Wrangler warns when one of those names already belongs to another Worker, and deploying reassigns it. Rename the three lines before you deploy if the names are taken. To run a second copy beside an existing one, change the Worker name, the database name and id, both namespace lines, and the three workflow lines.
 
 `wrangler.toml` attaches `stylebook.dev` as a [custom domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/). Delete the `[[routes]]` block before you deploy if that domain is not in your Cloudflare account. The deploy fails when the domain belongs to another account.
 
@@ -65,7 +71,7 @@ npx wrangler deploy
 npx wrangler secret put DEMO_KEY
 ```
 
-Type any long random string when asked. The demo routes refuse every request that does not carry it. Without the secret set they answer 503.
+Type any long random string when asked. A session with no prompt can pass that string on stdin. The demo routes refuse every request that does not carry it. Without the secret set they answer 503.
 
 In the commands below, `$DEMO_KEY` is that string and `$HOST` is the `https://` URL Wrangler printed. When `stylebook.dev` answers, you can use `https://stylebook.dev` instead.
 
