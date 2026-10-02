@@ -34,7 +34,7 @@ const CONTRACT = "skills/contract-summary/SKILL.md";
 
 const STEP = "1. Read the whole transcript before writing anything.";
 
-/** Ten open suggestions. The last two share a line of Steps. */
+/** Eleven open suggestions. The last two share a line of Steps. */
 export const SEED_EDITS: SeedEdit[] = [
 	{
 		agentId: RESEARCHER_ID,

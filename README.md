@@ -23,7 +23,7 @@ This table is the honest state of the code, not a roadmap.
 | Many agents suggesting at once | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-2.md). |
 | Who made each change and why | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-3.md). |
 | Review screen: compare, flag overlaps, publish | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-4.md). |
-| Pull the library with plain Git or over MCP | The steps are below. A live run log is added under `docs/runs/` after it has run. |
+| Pull the library with plain Git or over MCP | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-5.md). |
 
 Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for a piece, treat that piece as unproven.
 
@@ -85,9 +85,9 @@ curl -X POST "$HOST/demo/seed" \
   -d "{\"personKey\":\"$PERSON_KEY\",\"researcherKey\":\"$RESEARCHER_KEY\",\"proofreaderKey\":\"$PROOFREADER_KEY\"}"
 ```
 
-Keep the three keys. Open `$HOST` in a browser and sign in with `$PERSON_KEY`. The first page lists the newest suggestions. When more copies exist than fit on the page, it links to the older ones and does not read every copy.
+Keep the three keys. The seed request can take about a minute. Open `$HOST` in a browser and sign in with `$PERSON_KEY`. The first page lists the newest suggestions. When more copies exist than fit on the page, it links to the older ones and does not read every copy.
 
-A request that arrives with Python's default user agent has been refused by Cloudflare before it reached this Worker. `curl` in these steps sends `-A stylebook-live-run` for that reason. Git sends its own user agent. The run log records what got through.
+The `workers.dev` hostname returns [error 1010](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/) for Python's default user agent. That refusal happens before the request reaches the Worker. `curl` and Git get through on that hostname. On `stylebook.dev` the same Python agent gets through. If a hostname you control returns 1010, [Browser Integrity Check](https://developers.cloudflare.com/waf/tools/browser-integrity-check/) is refusing the client. The commands below send `-A stylebook-live-run` so they do not depend on that check. Git sends its own user agent. The run log records what got through.
 
 ### Plain Git
 
