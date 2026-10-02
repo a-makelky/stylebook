@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.0" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Publish">
+<path transform="translate(-0.48 0.36)" d="M5.5 17.5C8 19 10 21.4 11.6 24.6C15 16.6 19.8 10.2 26.8 6"/>
+<path transform="translate(-0.288 0.216)" d="M5.5 17.5C8 19 10 21.4 11.6 24.6C15 16.6 19.8 10.2 26.8 6"/>
+<path transform="translate(-0.096 0.072)" d="M5.5 17.5C8 19 10 21.4 11.6 24.6C15 16.6 19.8 10.2 26.8 6"/>
+<path transform="translate(0.096 -0.072)" d="M5.5 17.5C8 19 10 21.4 11.6 24.6C15 16.6 19.8 10.2 26.8 6"/>
+<path transform="translate(0.288 -0.216)" d="M5.5 17.5C8 19 10 21.4 11.6 24.6C15 16.6 19.8 10.2 26.8 6"/>
+<path transform="translate(0.48 -0.36)" d="M5.5 17.5C8 19 10 21.4 11.6 24.6C15 16.6 19.8 10.2 26.8 6"/>
+</svg>
