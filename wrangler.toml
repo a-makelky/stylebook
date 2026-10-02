@@ -1,6 +1,10 @@
 name = "stylebook"
 main = "src/index.ts"
 compatibility_date = "2026-09-01"
+# A custom domain otherwise turns the workers.dev hostname off.
+# https://developers.cloudflare.com/workers/configuration/routing/workers-dev/
+workers_dev = true
+preview_urls = true
 # global_fetch_strictly_public: a fetch from this Worker to its own host is
 # another Worker on the same zone. Without this flag that fetch returns 1042.
 # With it, the fetch comes back in through the public front door, which is how
