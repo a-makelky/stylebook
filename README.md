@@ -19,7 +19,7 @@ Early. This table is the honest state of the code, not a roadmap.
 
 | Piece | State |
 | --- | --- |
-| Library, suggestion copy, read back, history (Tracer 1) | Code and local tests. **Not yet run against live Artifacts.** |
+| Library, suggestion copy, read back, history (Tracer 1) | Ran live on 2026-10-02. A new copy names the library as its source, the skill read back matched, and a second edition was on both the library and that copy. Calling again for the same session reused the existing copy. See [the run log](docs/runs/2026-10-02-tracer-1.md). |
 | Many agents suggesting at once | Not started |
 | Who made each change and why | Not started |
 | Review screen: compare, flag overlaps, publish | Not started |
@@ -51,7 +51,7 @@ The response reports the library's editions, the name and source of the copy, an
 
 The demo route creates repositories on your account, so it refuses every request that does not carry the key. Without the secret set it answers 503.
 
-These steps have not yet been run end to end on a live account. That is the next piece of work.
+These steps were run against a live account on 2026-10-02. The record, with the key removed, is in [docs/runs/2026-10-02-tracer-1.md](docs/runs/2026-10-02-tracer-1.md).
 
 ## Develop
 
