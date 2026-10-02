@@ -191,15 +191,31 @@ async function findRepo(env: Env, name: string): Promise<ArtifactsRepo | null> {
 	return null;
 }
 
+/**
+ * A short-lived write token for the review library.
+ *
+ * `/git/library.git` is the earlier workspace's library. This library lives
+ * in the review workspace, so the screen writes its remote directly and
+ * records the person in the same audit table the Git route uses.
+ */
+async function reviewLibraryWrite(env: Env): Promise<{ remote: string; token: string }> {
+	const library = await ensureLibrary(env.REVIEW);
+	const [info, token] = await Promise.all([library.repo.info(), library.repo.createToken("write", 300)]);
+	return { remote: info.remote, token: token.plaintext };
+}
+
 /** Publish the sample library as the first edition when the review library is empty. */
 export async function ensureSampleLibrary(env: Env, person: Actor, key: string, origin: string): Promise<void> {
 	if (!allows(person, LIBRARY, true)) return;
 	const library = await ensureLibrary(env.REVIEW);
 	const existing = await listEditions(library.repo, 1);
 	if (existing.length > 0) return;
+	const access = await reviewLibraryWrite(env);
+	void key;
+	void origin;
 	const saved = await publishPrepared({
-		remote: gatewayRemote(origin, LIBRARY),
-		token: key,
+		remote: access.remote,
+		token: access.token,
 		author: { name: person.name, email: PERSON_EMAIL },
 		hasHistory: false,
 		prepare: async (tree) => {
@@ -450,9 +466,12 @@ async function writeLibrary(
 ): Promise<{ edition: string; noteCommit: string | null } | { stopped: string }> {
 	const library = await ensureLibrary(env.REVIEW);
 	const editions = await listEditions(library.repo, 1);
+	const access = await reviewLibraryWrite(env);
+	void key;
+	void origin;
 	return publishPrepared({
-		remote: gatewayRemote(origin, LIBRARY),
-		token: key,
+		remote: access.remote,
+		token: access.token,
 		author: { name: person.name, email: PERSON_EMAIL },
 		hasHistory: editions.length > 0,
 		prepare: async (tree) => {

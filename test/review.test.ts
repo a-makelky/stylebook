@@ -65,13 +65,14 @@ describe("compare and combine", () => {
 
 describe("review screen", () => {
 	let workspace: FakeWorkspace;
+	let earlier: FakeWorkspace;
 	let db: D1Database;
 	let origin = "";
 	let close: () => Promise<void> = async () => {};
 	let cookie = "";
 
 	const env = (): Env => ({
-		WORKSPACE: workspace.binding,
+		WORKSPACE: earlier.binding,
 		REVIEW: workspace.binding,
 		DEMO_KEY: "secret",
 		DB: db,
@@ -81,6 +82,8 @@ describe("review screen", () => {
 
 	beforeAll(async () => {
 		workspace = await FakeWorkspace.start();
+		earlier = await FakeWorkspace.start();
+		await earlier.binding.create(LIBRARY, { description: "Earlier library" });
 		db = memoryD1();
 		await registerActor(db, { id: "reviewer", kind: "person", name: "Editor", key: PERSON_KEY });
 		await registerActor(db, {
@@ -99,6 +102,7 @@ describe("review screen", () => {
 	afterAll(async () => {
 		await close();
 		await workspace.stop();
+		await earlier.stop();
 	});
 
 	async function post(path: string, body: string, headers: Record<string, string> = {}) {
@@ -149,6 +153,7 @@ describe("review screen", () => {
 		expect(html).toContain("Edition 1");
 		const file = await readBytes(await workspace.binding.get(LIBRARY), STARTER_SKILL_PATH);
 		expect(new TextDecoder().decode(file!)).toBe(STARTER_SKILL);
+		expect(await readBytes(await earlier.binding.get(LIBRARY), STARTER_SKILL_PATH)).toBeNull();
 	}, 60_000);
 
 	it("flags an overlap, refuses a messy publish, and offers three ways out", async () => {
