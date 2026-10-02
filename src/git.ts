@@ -25,7 +25,17 @@ export interface PublishInput {
 	/** False for a repo with no editions yet; true to add on top of existing ones. */
 	hasHistory: boolean;
 	branch?: string;
+	/**
+	 * Called once the local edition exists, immediately before it is sent.
+	 * Used to start other work so it overlaps the send. It is not awaited.
+	 */
+	beforePush?: () => void;
+	/** Marks the moment the send starts and the moment it returns. */
+	mark?: (phase: "push-start" | "push-end") => void;
 }
+
+/** A note ref, used to see whether a push of refs/notes/* is reported. */
+export const NOTES_REF = "refs/notes/stylebook";
 
 /**
  * Artifacts tokens look like `art_v1_<secret>?expires=<unix seconds>`.
@@ -73,6 +83,8 @@ export async function publishFile(input: PublishInput): Promise<string> {
 		author: input.author,
 	});
 
+	input.beforePush?.();
+	input.mark?.("push-start");
 	const result = await git.push({
 		fs,
 		http,
@@ -81,9 +93,53 @@ export async function publishFile(input: PublishInput): Promise<string> {
 		ref: branch,
 		onAuth,
 	});
+	input.mark?.("push-end");
 	if (!result.ok) {
 		throw new Error(`Publishing was rejected: ${result.error ?? "unknown reason"}`);
 	}
 
 	return edition;
+}
+
+/**
+ * Point a notes ref at the current edition and send that ref.
+ * The binding does not write refs, so this goes through Git, same as a file.
+ * https://developers.cloudflare.com/artifacts/examples/isomorphic-git/
+ */
+export async function publishNotesRef(input: {
+	remote: string;
+	token: string;
+	ref?: string;
+}): Promise<{ ref: string; target: string }> {
+	const ref = input.ref ?? NOTES_REF;
+	const dir = "/work";
+	const fs = new MemoryFS();
+	const onAuth = auth(input.token);
+
+	await git.clone({
+		fs,
+		http,
+		dir,
+		url: input.remote,
+		ref: "main",
+		singleBranch: true,
+		depth: 1,
+		onAuth,
+	});
+	const target = await git.resolveRef({ fs, dir, ref: "HEAD" });
+	await git.writeRef({ fs, dir, ref, value: target, force: true });
+
+	const result = await git.push({
+		fs,
+		http,
+		dir,
+		url: input.remote,
+		ref,
+		remoteRef: ref,
+		onAuth,
+	});
+	if (!result.ok) {
+		throw new Error(`Publishing was rejected: ${result.error ?? "unknown reason"}`);
+	}
+	return { ref, target };
 }

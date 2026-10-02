@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { Env } from "../src/env";
 import worker from "../src/index";
 import { publishFile, tokenSecret } from "../src/git";
 import { STARTER_SKILL, STARTER_SKILL_PATH } from "../src/seed";
@@ -7,6 +8,21 @@ import { LIBRARY, suggestionName } from "../src/workspace";
 import { FakeWorkspace } from "./fake-artifacts";
 
 const WAIT = { attempts: 5, delayMs: 5 };
+
+const unusedDb = {
+	prepare() {
+		throw new Error("D1 is not used by this test");
+	},
+} as unknown as D1Database;
+
+const unusedWorkflow = {
+	async create() {
+		throw new Error("not used");
+	},
+	async get() {
+		throw new Error("not used");
+	},
+} as unknown as Workflow;
 
 let workspace: FakeWorkspace;
 
@@ -144,7 +160,10 @@ describe("worker routes", () => {
 		worker.fetch(new Request(`https://stylebook.test${path}`, init), {
 			WORKSPACE: workspace.binding,
 			DEMO_KEY: key,
-		});
+			DB: unusedDb,
+			SUGGESTIONS: unusedWorkflow,
+			ARRIVALS: unusedWorkflow,
+		} as Env);
 
 	it("answers the health check", async () => {
 		const response = await call("/health", { method: "GET" }, "k");

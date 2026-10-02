@@ -5,6 +5,7 @@ One file per live run, named `YYYY-MM-DD-<what>.md`. A run log is the evidence t
 | Run | What it shows |
 | --- | --- |
 | [2026-10-02-tracer-1.md](2026-10-02-tracer-1.md) | Library, suggestion copy, and read-back on the live service. |
+| [2026-10-02-tracer-2.md](2026-10-02-tracer-2.md) | 25 agents, then 100, suggesting at the same time on the live service. Each push was recorded when it arrived. |
 
 ## What a run log contains
 

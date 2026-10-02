@@ -10,5 +10,50 @@ binding = "WORKSPACE"
 namespace = "stylebook-demo"
 remote = true # local dev talks to the real Artifacts service
 
+# Arrival rows. The database id is the D1 database, not an account id.
+[[d1_databases]]
+binding = "DB"
+database_name = "stylebook"
+database_id = "49be122c-bc15-4085-a8f4-9edb30f0409b"
+migrations_dir = "migrations"
+
+# One instance per suggestion session. Created together by the demo route.
+[[workflows]]
+name = "stylebook-suggestion"
+binding = "SUGGESTIONS"
+class_name = "SuggestionWorkflow"
+
+# Records each push. Started by the trigger below, not by the demo route.
+[[workflows]]
+name = "stylebook-arrival"
+binding = "ARRIVALS"
+class_name = "ArrivalWorkflow"
+
+# Namespace-wide: every push in the workspace, including copies created after
+# this deploy. Wrangler 4.147's config schema requires `targets` with
+# `workflow_name`, and `filter.repo_name` when a filter is limited to one repo.
+# The public guide shows `target.scriptName` / `target.workflowName` and
+# `filter.repoName`. Leaving repo_name unset is what covers the whole namespace.
+# https://developers.cloudflare.com/artifacts/guides/build-and-deploy-on-push/
+[[triggers.events]]
+type = "cf.artifacts.repo.pushed"
+
+  [triggers.events.filter]
+  namespace = "stylebook-demo"
+
+  [[triggers.events.targets]]
+  type = "workflow"
+  workflow_name = "stylebook-arrival"
+
+# Polling 100 session instances needs more subrequests than the default.
+[limits]
+subrequests = 10000
+
 [observability]
 enabled = true
+
+  [observability.logs]
+  enabled = true
+
+  [observability.traces]
+  enabled = true
