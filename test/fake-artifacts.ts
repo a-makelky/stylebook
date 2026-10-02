@@ -1,8 +1,13 @@
 // A stand-in for the Artifacts Workers binding, backed by bare Git repos on
 // disk and the local Git server. It covers only the methods Stylebook uses and
-// follows the generated binding types (worker-configuration.d.ts). Where the
-// live service's behavior is not documented, the choices here are guesses and
-// are marked as such.
+// follows the generated binding types (worker-configuration.d.ts).
+//
+// The 2026-10-02 live run (docs/runs/2026-10-02-tracer-1.md) confirmed two
+// choices the public docs leave unspecified: info().source is
+// `artifacts:<namespace>/<repo>`, and the first get() after fork() returns
+// does not report FORK_IN_PROGRESS for a small copy. Those are no longer
+// guesses. A non-zero forkDelayCalls only exercises the error code the
+// generated types still document.
 
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -24,7 +29,7 @@ interface RepoRecord {
 	source: string | null;
 	createdAt: string;
 	tokens: Map<string, Scope>;
-	/** How many more get() calls should report "still forking". Guess: forks are not instant. */
+	/** How many more get() calls should report "still forking". */
 	notReadyFor: number;
 }
 
@@ -33,7 +38,11 @@ export class FakeWorkspace {
 	readonly root = mkdtempSync(join(tmpdir(), "stylebook-test-"));
 	private repos = new Map<string, RepoRecord>();
 	private server!: GitServer;
-	/** Number of get() calls a new fork reports FORK_IN_PROGRESS for. */
+	/**
+	 * Number of get() calls a new fork reports FORK_IN_PROGRESS for.
+	 * The live service did not report that code after fork() returned, so
+	 * the default is 0.
+	 */
 	forkDelayCalls = 0;
 	forkCalls: string[] = [];
 

@@ -2,7 +2,9 @@
 
 One file per live run, named `YYYY-MM-DD-<what>.md`. A run log is the evidence that a piece of Stylebook works against the real Artifacts service.
 
-No run log has been committed yet.
+| Run | What it shows |
+| --- | --- |
+| [2026-10-02-tracer-1.md](2026-10-02-tracer-1.md) | Library, suggestion copy, and read-back on the live service. |
 
 ## What a run log contains
 
@@ -19,8 +21,8 @@ Remove the demo key, every token, and the Cloudflare account ID. Artifacts remot
 
 ## Open questions for the first live run
 
-The local tests guess at these. The first run should answer them here.
+Answered by [2026-10-02-tracer-1.md](2026-10-02-tracer-1.md). The public binding docs do not specify these. The generated `worker-configuration.d.ts` and the live service do.
 
-- How long after `fork()` returns does `get()` report `FORK_IN_PROGRESS`, if at all?
-- Does `info().source` on a copy read `artifacts:<namespace>/library`, as the generated types suggest?
-- Does a copy made with `defaultBranchOnly: true` carry the library's full history on `main`?
+- `get()` did not report `FORK_IN_PROGRESS` after `fork()` returned. The first `get()` succeeded, in 48 ms and 50 ms, with no retry.
+- `info().source` on both copies was `artifacts:stylebook-demo/library`.
+- A copy made with `defaultBranchOnly: true` carried both editions on `main`, with the same edition ids as the library.
