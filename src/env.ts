@@ -24,9 +24,12 @@ export interface Env {
 	/** Sign-in email. Restricted to one sender address. Absent in tests that do not send mail. */
 	EMAIL?: OutboundMail;
 	MAX_WORKSPACES?: string;
+	MAX_WORKSPACES_PER_EMAIL?: string;
+	MAX_WORKSPACES_PER_IP_PER_DAY?: string;
 	MAX_PEOPLE?: string;
 	MAX_AGENTS?: string;
 	MAX_OPEN_SUGGESTIONS?: string;
 	MAX_SIGN_IN_EMAILS_PER_HOUR?: string;
 	MAX_SIGN_IN_EMAILS_PER_IP_PER_HOUR?: string;
+	MAX_SIGN_IN_EMAILS_GLOBAL_PER_HOUR?: string;
 }

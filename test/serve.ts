@@ -49,7 +49,16 @@ async function forward(request: IncomingMessage, response: ServerResponse, env: 
 		headers,
 		body: method === "GET" || method === "HEAD" ? undefined : body,
 	});
-	const outgoing = await worker.fetch(incoming, env);
+	const pending: Promise<unknown>[] = [];
+	const ctx = {
+		waitUntil(promise: Promise<unknown>) {
+			pending.push(promise);
+		},
+		passThroughOnException() {},
+		props: {},
+	} as ExecutionContext;
+	const outgoing = await worker.fetch(incoming, env, ctx);
+	await Promise.allSettled(pending);
 	const bytes = Buffer.from(await outgoing.arrayBuffer());
 	const outHeaders: Record<string, string | string[]> = {};
 	const cookies = outgoing.headers.getSetCookie?.() ?? [];

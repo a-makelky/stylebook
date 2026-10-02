@@ -50,6 +50,9 @@ describe("workspaces, sign-in, invites and agents", () => {
 		MAX_OPEN_SUGGESTIONS: "200",
 		MAX_SIGN_IN_EMAILS_PER_HOUR: "30",
 		MAX_SIGN_IN_EMAILS_PER_IP_PER_HOUR: "80",
+		MAX_SIGN_IN_EMAILS_GLOBAL_PER_HOUR: "500",
+		MAX_WORKSPACES_PER_EMAIL: "20",
+		MAX_WORKSPACES_PER_IP_PER_DAY: "50",
 		EMAIL: {
 			async send(message) {
 				const to = typeof message.to === "string" ? message.to : message.to.email;
@@ -99,7 +102,10 @@ describe("workspaces, sign-in, invites and agents", () => {
 		});
 		expect(started.status).toBe(200);
 		const secret = await linkFor(email);
-		const signed = await fetch(`${origin}/s/${secret}`, { redirect: "manual" });
+		const preview = await fetch(`${origin}/s/${secret}`, { redirect: "manual" });
+		expect(preview.status).toBe(200);
+		expect(await preview.text()).toContain("Open your new workspace");
+		const signed = await fetch(`${origin}/s/${secret}`, { method: "POST", redirect: "manual" });
 		expect(signed.status).toBe(303);
 		const cookie = sessionCookie(signed);
 		expect(cookie.startsWith("stylebook=")).toBe(true);
@@ -226,7 +232,7 @@ describe("workspaces, sign-in, invites and agents", () => {
 		});
 		expect(invited.status).toBe(200);
 		const secret = await linkFor("colleague@stylebook.invalid");
-		const joined = await fetch(`${origin}/s/${secret}`, { redirect: "manual" });
+		const joined = await fetch(`${origin}/s/${secret}`, { method: "POST", redirect: "manual" });
 		const colleague = sessionCookie(joined);
 		const home = await (await fetch(`${origin}/`, { headers: { Cookie: colleague } })).text();
 		expect(home).toContain("Studio");
@@ -260,9 +266,12 @@ describe("workspaces, sign-in, invites and agents", () => {
 		const secret = await linkFor(email);
 		const opened = await fetch(`${origin}/s/${secret}`, { redirect: "manual" });
 		expect(opened.status).toBe(200);
-		const choice = chooseCookie(opened);
+		expect(await opened.text()).toContain("Sign in");
+		const posted = await fetch(`${origin}/s/${secret}`, { method: "POST", redirect: "manual" });
+		expect(posted.status).toBe(200);
+		const choice = chooseCookie(posted);
 		expect(choice.startsWith("stylebook_choose=")).toBe(true);
-		const page = await opened.text();
+		const page = await posted.text();
 		expect(page).toContain("Open First");
 		expect(page).toContain("Open Second");
 		expect(BANNED.test(visible(page))).toBe(false);
@@ -289,8 +298,13 @@ describe("workspaces, sign-in, invites and agents", () => {
 		expect((await send()).status).toBe(200);
 		expect((await send()).status).toBe(200);
 		const blocked = await send();
-		expect(blocked.status).toBe(429);
-		expect(await blocked.text()).toContain(LIMIT_MESSAGE.signIn);
+		expect(blocked.status).toBe(200);
+		expect(await blocked.text()).toContain("If that address is in a workspace, a link is on its way.");
+		const sends = await db
+			.prepare(`SELECT COUNT(*) AS n FROM sign_in_sends WHERE email = ?1`)
+			.bind(email)
+			.first<{ n: number }>();
+		expect(sends?.n).toBe(2);
 		env.MAX_SIGN_IN_EMAILS_PER_HOUR = "30";
 	});
 

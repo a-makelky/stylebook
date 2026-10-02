@@ -157,6 +157,9 @@ export async function registerActor(db: D1Database, input: ActorInput): Promise<
 	if (existing && existing.kind !== input.kind) {
 		throw new Error("That actor already exists as a different kind.");
 	}
+	if (existing && existing.workspaceId !== input.workspaceId) {
+		throw new Error("That actor already belongs to another workspace.");
+	}
 	const now = new Date().toISOString();
 	const model = input.kind === "agent" ? input.model ?? null : null;
 	const ownerId = input.kind === "agent" ? input.ownerId ?? null : null;
@@ -171,10 +174,9 @@ export async function registerActor(db: D1Database, input: ActorInput): Promise<
 			`INSERT INTO actors (id, kind, name, owner_id, model, workspace_id, email, created_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
        ON CONFLICT(id) DO UPDATE SET
-         name = excluded.name,
-         model = excluded.model,
-         email = COALESCE(excluded.email, actors.email),
-         workspace_id = excluded.workspace_id`,
+         name = CASE WHEN actors.workspace_id = excluded.workspace_id THEN excluded.name ELSE actors.name END,
+         model = CASE WHEN actors.workspace_id = excluded.workspace_id THEN excluded.model ELSE actors.model END,
+         email = CASE WHEN actors.workspace_id = excluded.workspace_id THEN COALESCE(excluded.email, actors.email) ELSE actors.email END`,
 		)
 		.bind(input.id, input.kind, name, ownerId, model, input.workspaceId, email, now)
 		.run();
@@ -194,6 +196,9 @@ export async function registerActor(db: D1Database, input: ActorInput): Promise<
 
 	const stored = await actorById(db, input.id);
 	if (!stored) throw new Error("The actor could not be stored.");
+	if (stored.workspaceId !== input.workspaceId) {
+		throw new Error("That actor already belongs to another workspace.");
+	}
 	return stored;
 }
 

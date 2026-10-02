@@ -54,7 +54,7 @@ function checkDemoKey(request: Request, env: Env): Response | null {
 }
 
 export default {
-	async fetch(request: Request, env: Env): Promise<Response> {
+	async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
 
 		if (request.method === "GET" && url.pathname === "/health") {
@@ -79,7 +79,7 @@ export default {
 			}
 		}
 
-		const screen = await handleScreen(request, env);
+		const screen = await handleScreen(request, env, ctx);
 		if (screen) return screen;
 
 		if (url.pathname.startsWith("/git/")) {
@@ -121,6 +121,9 @@ export default {
 					const inputs = Array.isArray(body.actors) ? body.actors : [];
 					if (inputs.length < 1 || inputs.length > 20) {
 						return json({ ok: false, error: "Send between 1 and 20 actors." }, 400);
+					}
+					if (inputs.some((input) => input?.workspaceId !== "demo")) {
+						return json({ ok: false, error: "The demo routes only change the Demo workspace." }, 403);
 					}
 					const actors = [];
 					for (const input of inputs) actors.push(await registerActor(env.DB, input));

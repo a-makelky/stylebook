@@ -32,13 +32,13 @@ Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for
 
 Stylebook is hosted at [stylebook.dev](https://stylebook.dev). A writer opens that address in a browser. They do not need Cloudflare or a terminal.
 
-1. Start a workspace with a name and an email address. Stylebook sends a link from `sign-in@stylebook.dev`. It works once and expires in 15 minutes. Opening it lands on the library, which already holds the sample pages. The domain has to be onboarded for Email Service before a link can arrive. The run log records the current state of that.
-2. From People and agents, invite a colleague by email. Their link signs them into that same workspace. Everyone in the workspace can review and publish. Remove ends that person's sessions.
+1. Start a workspace with a name and an email address. Stylebook sends a link from `sign-in@stylebook.dev`. It works once and expires in 15 minutes. Opening it asks you to confirm, and then lands on the library, which already holds the sample pages. The domain has to be onboarded for Email Service before a link can arrive. The run log records the current state of that.
+2. From People and agents, invite a colleague by email. Their link signs them into that same workspace. Everyone in the workspace can review and publish. The person who started the workspace can remove someone, which ends that person's sessions.
 3. Connect an agent by giving it a name and picking the tool. The key is shown once, with a setup for Cursor or Claude Code and a setup for a folder on your computer. The agent's first suggestion then appears on the page. An agent can be renamed, and its key can be revoked.
 
 A workspace is one team. Its library, suggestions, people, agents and History stay inside it. Another workspace cannot see or change them.
 
-When a limit is reached, the page says so in plain language. The starting limits are 40 workspaces, 25 people and 40 agents in one workspace, 200 open suggestions in one workspace, and 5 sign-in emails per address per hour.
+When a limit is reached, the page says so in plain language. The starting limits are 40 workspaces, 2 per email address and 5 from one network per day, 25 people and 40 agents in one workspace, 200 open suggestions in one workspace, 5 sign-in emails per address per hour, and 100 sign-in emails an hour in total.
 
 ## Run it yourself
 

@@ -248,7 +248,11 @@ export function copyCursor(row: Pick<RecentCopy, "acceptedAt" | "id">): string {
 	return `${row.acceptedAt}|${row.id}`;
 }
 
-export async function pushForEdition(db: D1Database, editionId: string): Promise<GatewayPush | null> {
+export async function pushForEdition(
+	db: D1Database,
+	editionId: string,
+	workspaceId?: string,
+): Promise<GatewayPush | null> {
 	const row = await db
 		.prepare(
 			`SELECT g.repo_name, g.ref_name, g.edition_id, g.actor_id, g.actor_name, g.actor_kind,
@@ -257,10 +261,11 @@ export async function pushForEdition(db: D1Database, editionId: string): Promise
        LEFT JOIN push_confirmations c
          ON c.repo_name = g.repo_name AND c.ref_name = g.ref_name AND c.edition_id = g.edition_id
        WHERE g.edition_id = ?1
+         AND (?2 IS NULL OR g.workspace_id = ?2)
        ORDER BY CASE g.ref_name WHEN 'refs/heads/main' THEN 0 ELSE 1 END, g.id DESC
        LIMIT 1`,
 		)
-		.bind(editionId)
+		.bind(editionId, workspaceId ?? null)
 		.first<GatewayRow>();
 	return row ? toGateway(row) : null;
 }
