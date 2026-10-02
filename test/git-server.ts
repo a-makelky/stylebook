@@ -55,7 +55,7 @@ export async function startGitServer(
 
 		const backend = spawn("git", ["http-backend"], {
 			env: {
-				PATH: process.env.PATH ?? "",
+				...process.env,
 				GIT_PROJECT_ROOT: root,
 				GIT_HTTP_EXPORT_ALL: "1",
 				REQUEST_METHOD: request.method ?? "GET",

@@ -23,11 +23,13 @@ import { publishPrepared, publishSavedEdition } from "./git";
 import { editionNote } from "./notes";
 import { SAMPLE_FILES } from "./sample-files";
 import { whoPublished } from "./who";
+import { LIMIT_MESSAGE, limitsOf } from "./limits";
+import { openSuggestionCount, workspaceById } from "./teams";
 import {
-	LIBRARY,
 	ensureLibrary,
 	ensureSuggestion,
 	getRepo,
+	libraryName,
 	listEditions,
 	listPaths,
 	readBytes,
@@ -38,7 +40,7 @@ import {
 const PERSON_EMAIL = "person@stylebook.invalid";
 const AGENT_EMAIL = "agent@stylebook.invalid";
 const PATH_OK = /^[a-z0-9._/-]+$/i;
-const NAME_OK = /^sug-[a-z0-9-]{1,58}$/;
+const NAME_OK = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const MONTHS = [
 	"January",
 	"February",
@@ -94,6 +96,7 @@ export interface DeskHistory {
 
 export interface Desk {
 	actorName: string;
+	workspaceName: string;
 	canPublish: boolean;
 	editionNumber: number | null;
 	publishedOn: string | null;
@@ -192,12 +195,13 @@ async function findRepo(env: Env, name: string): Promise<ArtifactsRepo | null> {
 
 /** Publish the sample library as the first edition when the review library is empty. */
 export async function ensureSampleLibrary(env: Env, person: Actor, key: string, origin: string): Promise<void> {
-	if (!allows(person, LIBRARY, true)) return;
-	const library = await ensureLibrary(env.WORKSPACE);
+	const libraryRepo = libraryName(person.workspaceId);
+	if (!allows(person, libraryRepo, true)) return;
+	const library = await ensureLibrary(env.WORKSPACE, person.workspaceId);
 	const existing = await listEditions(library.repo, 1);
 	if (existing.length > 0) return;
 	const saved = await publishPrepared({
-		remote: gatewayRemote(origin, LIBRARY),
+		remote: gatewayRemote(origin, libraryRepo),
 		token: key,
 		author: { name: person.name, email: PERSON_EMAIL },
 		hasHistory: false,
@@ -214,8 +218,12 @@ export async function ensureSampleLibrary(env: Env, person: Actor, key: string, 
 	void saved;
 }
 
-async function libraryFile(env: Env, path: string): Promise<{ text: string; editions: Edition[] }> {
-	const library = await ensureLibrary(env.WORKSPACE);
+async function libraryFile(
+	env: Env,
+	workspaceId: string,
+	path: string,
+): Promise<{ text: string; editions: Edition[] }> {
+	const library = await ensureLibrary(env.WORKSPACE, workspaceId);
 	const editions = await listEditions(library.repo, 1000);
 	const text = (await readText(library.repo, path)) ?? "";
 	return { text, editions };
@@ -264,7 +272,7 @@ async function openSuggestions(
 	pinned: string | null,
 ): Promise<{ suggestions: OpenSuggestion[]; moreBefore: string | null }> {
 	const hidden = await declinedKeys(env, actor.id);
-	const batch = await recentCopies(env.DB, before, SUGGESTION_READS + 1);
+	const batch = await recentCopies(env.DB, actor.workspaceId, before, SUGGESTION_READS + 1);
 	const hasExtra = batch.length > SUGGESTION_READS;
 	const rows = batch.slice(0, SUGGESTION_READS).filter(
 		(row) => allows(actor, row.repoName, false) && !hidden.has(`${row.repoName}\n${path}`),
@@ -358,12 +366,12 @@ function pageLines(libraryText: string, selected: OpenSuggestion | null, overlap
 	return lines;
 }
 
-async function historyOf(env: Env, editions: Edition[]): Promise<DeskHistory[]> {
+async function historyOf(env: Env, editions: Edition[], workspaceId: string): Promise<DeskHistory[]> {
 	const total = editions.length;
 	const shown = editions.slice(0, 12);
 	const lines = await Promise.all(
 		shown.map(async (edition, index) => {
-			const who = await whoPublished(env, edition.id);
+			const who = await whoPublished(env, edition.id, workspaceId);
 			const approver = who?.actor.name ?? edition.author;
 			const writer = who?.note?.actor ?? null;
 			const owner = who?.note?.onBehalfOf ?? who?.owner.name ?? null;
@@ -387,7 +395,8 @@ export async function loadDesk(
 	before: string | null,
 ): Promise<Desk> {
 	await ensureSampleLibrary(env, actor, key, origin);
-	const library = await ensureLibrary(env.WORKSPACE);
+	const library = await ensureLibrary(env.WORKSPACE, actor.workspaceId);
+	const workspace = await workspaceById(env.DB, actor.workspaceId);
 	const paths = await listPaths(library.repo);
 	const texts = await Promise.all(paths.map((path) => readText(library.repo, path)));
 	const items: DeskItem[] = paths.map((path, index) => {
@@ -400,7 +409,7 @@ export async function loadDesk(
 		items[0]?.path ??
 		null;
 	const { text: libraryText, editions } = chosenPath
-		? await libraryFile(env, chosenPath)
+		? await libraryFile(env, actor.workspaceId, chosenPath)
 		: { text: "", editions: await listEditions(library.repo, 1000) };
 	const opened = chosenPath
 		? await openSuggestions(env, actor, chosenPath, libraryText, before, suggestion)
@@ -435,11 +444,12 @@ export async function loadDesk(
 	const overlapSources = selected
 		? suggestions.filter((entry) => entry.name !== selected.name && overlaps.some((item) => item.number === entry.number))
 		: [];
-	const history = await historyOf(env, editions);
+	const history = await historyOf(env, editions, actor.workspaceId);
 	const current = editions[0];
 	return {
 		actorName: actor.name,
-		canPublish: allows(actor, LIBRARY, true),
+		workspaceName: workspace?.name ?? "Workspace",
+		canPublish: allows(actor, libraryName(actor.workspaceId), true),
 		editionNumber: editions.length || null,
 		publishedOn: current ? plainDate(current.savedAt) : null,
 		items,
@@ -457,7 +467,7 @@ export async function loadDesk(
 }
 
 async function agentFor(env: Env, person: Actor, preferredId: string | null): Promise<Actor> {
-	const actors = await listActors(env.DB);
+	const actors = await listActors(env.DB, person.workspaceId);
 	const agents = actors.filter((actor) => actor.kind === "agent" && actor.ownerId === person.id);
 	const preferred = preferredId ? agents.find((agent) => agent.id === preferredId) : null;
 	const agent = preferred ?? agents[0];
@@ -478,10 +488,10 @@ async function writeLibrary(
 	message: string,
 	note: string | undefined,
 ): Promise<{ edition: string; noteCommit: string | null } | { stopped: string }> {
-	const library = await ensureLibrary(env.WORKSPACE);
+	const library = await ensureLibrary(env.WORKSPACE, person.workspaceId);
 	const editions = await listEditions(library.repo, 1);
 	return publishPrepared({
-		remote: gatewayRemote(origin, LIBRARY),
+		remote: gatewayRemote(origin, libraryName(person.workspaceId)),
 		token: key,
 		author: { name: person.name, email: PERSON_EMAIL },
 		hasHistory: editions.length > 0,
@@ -510,8 +520,8 @@ function publishedNotice(editionNumber: number): string {
 	return `Published as edition ${editionNumber}.`;
 }
 
-async function editionCount(env: Env): Promise<number> {
-	const library = await ensureLibrary(env.WORKSPACE);
+async function editionCount(env: Env, workspaceId: string): Promise<number> {
+	const library = await ensureLibrary(env.WORKSPACE, workspaceId);
 	return (await listEditions(library.repo, 1000)).length;
 }
 
@@ -524,9 +534,9 @@ export async function publishSuggestion(
 	path: string,
 	mode: "publish" | "keep-this" | "keep-other",
 ): Promise<string> {
-	if (!allows(person, LIBRARY, true)) throw new DeskError("This key cannot change the library.", 403);
+	if (!allows(person, libraryName(person.workspaceId), true)) throw new DeskError("This key cannot change the library.", 403);
 	await ensureSampleLibrary(env, person, key, origin);
-	const { text: libraryText } = await libraryFile(env, path);
+	const { text: libraryText } = await libraryFile(env, person.workspaceId, path);
 	const suggestions = (await openSuggestions(env, person, path, libraryText, null, name)).suggestions;
 	const selected = suggestions.find((entry) => entry.name === name);
 	if (!selected) throw new DeskError("That suggestion is not open.");
@@ -575,7 +585,7 @@ export async function publishSuggestion(
 		note,
 	);
 	if ("stopped" in saved) return saved.stopped;
-	const count = await editionCount(env);
+	const count = await editionCount(env, person.workspaceId);
 	if (mode === "keep-this") return `Kept this one. ${publishedNotice(count)}`;
 	if (mode === "keep-other") return `Kept the other. ${publishedNotice(count)}`;
 	return publishedNotice(count);
@@ -588,8 +598,8 @@ export async function combineSuggestions(
 	name: string,
 	path: string,
 ): Promise<string> {
-	if (!allows(person, LIBRARY, true)) throw new DeskError("This key cannot change the library.", 403);
-	const { text: libraryText } = await libraryFile(env, path);
+	if (!allows(person, libraryName(person.workspaceId), true)) throw new DeskError("This key cannot change the library.", 403);
+	const { text: libraryText } = await libraryFile(env, person.workspaceId, path);
 	const suggestions = (await openSuggestions(env, person, path, libraryText, null, name)).suggestions;
 	const selected = suggestions.find((entry) => entry.name === name);
 	if (!selected) throw new DeskError("That suggestion is not open.");
@@ -601,10 +611,10 @@ export async function combineSuggestions(
 	const agent = await agentFor(env, person, selected.actorId);
 	const owner = await ownerOf(env.DB, agent);
 	const session = `combine-${selected.number}-${secondNumber}-${crypto.randomUUID().replace(/-/g, "").slice(0, 6)}`;
-	const copyName = suggestionName(agent.id, session);
+	const copyName = suggestionName(agent.workspaceId, agent.id, session);
 	if (!allows(agent, copyName, true)) throw new DeskError("This key cannot change that copy.", 403);
 
-	const library = await ensureLibrary(env.WORKSPACE);
+	const library = await ensureLibrary(env.WORKSPACE, agent.workspaceId);
 	await ensureSuggestion(env.WORKSPACE, library.repo, copyName);
 	const grant = await issueGrant(env.DB, agent, copyName, true, 300);
 	const why = `Combined both changes, in order, from Suggestion ${selected.number} and Suggestion ${secondNumber}.`;
@@ -654,9 +664,13 @@ export async function saveAgentSuggestion(
 	if (!why) throw new DeskError("Say why this suggestion was made.");
 	if (input.content.length > 200_000) throw new DeskError("That page is too large.");
 	const owner = await ownerOf(env.DB, agent);
-	const name = suggestionName(agent.id, input.session);
+	const name = suggestionName(agent.workspaceId, agent.id, input.session);
 	if (!allows(agent, name, true)) throw new DeskError("This key cannot change that copy.", 403);
-	const library = await ensureLibrary(env.WORKSPACE);
+	const existingCopy = await getRepo(env.WORKSPACE, name);
+	if (!existingCopy && (await openSuggestionCount(env.DB, agent.workspaceId)) >= limitsOf(env).openSuggestions) {
+		throw new DeskError(LIMIT_MESSAGE.openSuggestions, 429);
+	}
+	const library = await ensureLibrary(env.WORKSPACE, agent.workspaceId);
 	const existing = await listEditions(library.repo, 1);
 	if (existing.length === 0) throw new DeskError("The library has no edition yet.");
 	await ensureSuggestion(env.WORKSPACE, library.repo, name);

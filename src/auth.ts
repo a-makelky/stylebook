@@ -3,8 +3,10 @@
 
 import { actorByKey, type Actor } from "./actors";
 import type { Env } from "./env";
+import { actorBySession, endSession } from "./teams";
 
 export const KEY_COOKIE = "stylebook";
+export const CHOOSE_COOKIE = "stylebook_choose";
 
 export function readPresentedKey(request: Request): string | null {
 	const cookie = request.headers.get("Cookie") ?? "";
@@ -28,15 +30,39 @@ export function readPresentedKey(request: Request): string | null {
 	return null;
 }
 
+export function readCookie(request: Request, name: string): string | null {
+	const cookie = request.headers.get("Cookie") ?? "";
+	for (const part of cookie.split(";")) {
+		const trimmed = part.trim();
+		const eq = trimmed.indexOf("=");
+		if (eq === -1) continue;
+		if (trimmed.slice(0, eq) !== name) continue;
+		try {
+			const value = decodeURIComponent(trimmed.slice(eq + 1));
+			if (value) return value;
+		} catch {
+			return null;
+		}
+	}
+	return null;
+}
+
 export async function actorFromRequest(
 	request: Request,
 	env: Env,
 ): Promise<{ actor: Actor; key: string } | null> {
 	const key = readPresentedKey(request);
 	if (!key) return null;
-	const actor = await actorByKey(env.DB, key);
-	if (!actor) return null;
-	return { actor, key };
+	const byKey = await actorByKey(env.DB, key);
+	if (byKey) return { actor: byKey, key };
+	const bySession = await actorBySession(env.DB, key);
+	if (!bySession) return null;
+	return { actor: bySession, key };
+}
+
+export async function signOut(request: Request, env: Env): Promise<void> {
+	const key = readPresentedKey(request);
+	if (key) await endSession(env.DB, key);
 }
 
 /** HttpOnly, Secure, SameSite=Strict. The browser only sends it back to this host. */
@@ -46,4 +72,12 @@ export function keyCookie(key: string): string {
 
 export function clearCookie(): string {
 	return `${KEY_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
+}
+
+export function chooseCookie(secret: string): string {
+	return `${CHOOSE_COOKIE}=${encodeURIComponent(secret)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=900`;
+}
+
+export function clearChooseCookie(): string {
+	return `${CHOOSE_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
 }

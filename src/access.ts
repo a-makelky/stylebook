@@ -5,7 +5,7 @@
 
 import { actorById, actorByKey, allows, hashKey, refusal, type Actor } from "./actors";
 import type { Env } from "./env";
-import { getRepo } from "./workspace";
+import { getRepo, libraryName } from "./workspace";
 
 export interface Grant {
 	actor: Actor;
@@ -72,7 +72,7 @@ export async function handleAccess(request: Request, env: Env): Promise<Response
 	if (!actor) return Response.json({ ok: false, error: "Missing or unknown key." }, { status: 401 });
 
 	const body = (await request.json().catch(() => ({}))) as { name?: unknown; write?: unknown };
-	const name = typeof body.name === "string" && body.name ? body.name : "library";
+	const name = typeof body.name === "string" && body.name ? body.name : libraryName(actor.workspaceId);
 	const write = body.write === true;
 	if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/.test(name)) {
 		return Response.json({ ok: false, error: "That name is not a copy in the workspace." }, { status: 400 });

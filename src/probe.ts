@@ -36,12 +36,13 @@ export interface ProbeResult {
 export async function probeForkDuringPush(
 	workspace: Artifacts,
 	library: ArtifactsRepo,
+	workspaceId: string,
 	actor: string,
 	runId: string,
 	access: { remote: string; token: string; author: Author },
 	wait?: WaitOptions,
 ): Promise<ProbeResult> {
-	const name = suggestionName(actor, `${runId}-inflight`);
+	const name = suggestionName(workspaceId, actor, `${runId}-inflight`);
 	const result: ProbeResult = {
 		libraryPush: { startedAt: null, endedAt: null, edition: null, failures: [] },
 		fork: {

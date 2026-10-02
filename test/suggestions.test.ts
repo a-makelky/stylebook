@@ -9,7 +9,7 @@ import { NOTES_REF } from "../src/git";
 import { describeError, sanitize } from "../src/redact";
 import { STARTER_SKILL, withRevisionNote, STARTER_SKILL_PATH } from "../src/seed";
 import { inlineLauncher, runSwarm, timingOf, type ArrivalLog } from "../src/swarm";
-import { LIBRARY } from "../src/workspace";
+import { libraryName } from "../src/workspace";
 import { ArrivalWorkflow } from "../src/workflows";
 import type { WorkflowStep } from "cloudflare:workers";
 import { FakeWorkspace } from "./fake-artifacts";
@@ -165,6 +165,8 @@ describe("secrets stay out of responses", () => {
 
 const PERSON_KEY = "test-person-key-0001";
 const CURSOR_KEY = "test-cursor-key-0001";
+const WS = "desk";
+const LIBRARY = libraryName(WS);
 
 describe("many sessions at once", () => {
 	let workspace: FakeWorkspace;
@@ -175,13 +177,14 @@ describe("many sessions at once", () => {
 	beforeAll(async () => {
 		workspace = await FakeWorkspace.start();
 		db = memoryD1();
-		await registerActor(db, { id: "editor", kind: "person", name: "Aaron", key: PERSON_KEY });
+		await registerActor(db, { id: "editor", kind: "person", name: "Aaron", workspaceId: WS, key: PERSON_KEY });
 		await registerActor(db, {
 			id: "cursor",
 			kind: "agent",
 			name: "Cursor",
 			ownerId: "editor",
 			model: "cursor",
+			workspaceId: WS,
 			key: CURSOR_KEY,
 		});
 		const server = await serveWorker({
@@ -215,6 +218,7 @@ describe("many sessions at once", () => {
 			},
 			n: 8,
 			actor: "cursor",
+			workspaceId: WS,
 			runId: "local01",
 			arrivalWaitMs: 0,
 			runner: "inline",
@@ -425,13 +429,14 @@ describe("suggestions route", () => {
 
 	it("scrubs a failure that contains a remote and a token", async () => {
 		const db = memoryD1();
-		await registerActor(db, { id: "editor", kind: "person", name: "Aaron", key: PERSON_KEY });
+		await registerActor(db, { id: "editor", kind: "person", name: "Aaron", workspaceId: WS, key: PERSON_KEY });
 		await registerActor(db, {
 			id: "cursor",
 			kind: "agent",
 			name: "Cursor",
 			ownerId: "editor",
 			model: "cursor",
+			workspaceId: WS,
 			key: CURSOR_KEY,
 		});
 		const response = await worker.fetch(

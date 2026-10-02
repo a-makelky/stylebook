@@ -21,9 +21,9 @@ Code, comments and this file may use the Git words. Users never see them.
 
 | On screen | Underneath |
 | --- | --- |
-| Workspace | Artifacts namespace |
-| Library | Repo named `library` |
-| Suggestion | Fork of the library, one per actor per session: `sug-<actor>-<session>` |
+| Workspace | A team prefix on every repo in one Artifacts namespace. The binding cannot pick a namespace at runtime. See the [Workers binding](https://developers.cloudflare.com/artifacts/api/workers-binding/). |
+| Library | Repo named `{workspace}-library` |
+| Suggestion | Fork of the library, one per actor per session: `{workspace}-sug-{actor}-{session}` |
 | Edition | Commit on `main` |
 | Publish | Combine a suggestion into the library and push |
 
@@ -31,6 +31,10 @@ Code, comments and this file may use the Git words. Users never see them.
 
 - `src/index.ts` — routes and the demo-key check
 - `src/workspace.ts` — library and suggestion copies over the Artifacts binding
+- `src/teams.ts` — workspaces, sessions, invites, and agent keys
+- `src/mail.ts` — one-time sign-in links
+- `src/limits.ts` — starting limits
+- `src/usage.ts` — per-workspace operation counts
 - `src/git.ts` — writing an edition with isomorphic-git
 - `src/memory-fs.ts` — in-memory file system isomorphic-git runs on
 - `src/actors.ts` — people, agents, and hashed keys

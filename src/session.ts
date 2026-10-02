@@ -32,6 +32,7 @@ export interface SessionGateway {
 
 export interface SessionParams {
 	actor: string;
+	workspaceId: string;
 	session: string;
 	editIndex: number;
 	runId: string;
@@ -83,7 +84,7 @@ export async function runSuggestionSession(
 	const startedMs = Date.now();
 	const startedAt = new Date(startedMs).toISOString();
 	const edit = editAt(params.editIndex);
-	const name = suggestionName(params.actor, params.session);
+	const name = suggestionName(params.workspaceId, params.actor, params.session);
 	const failures: Failure[] = [];
 	const base = {
 		name,
@@ -114,7 +115,7 @@ export async function runSuggestionSession(
 	};
 
 	try {
-		const library = await ensureLibrary(workspace, wait);
+		const library = await ensureLibrary(workspace, params.workspaceId, wait);
 		const libraryEditions = await listEditions(library.repo);
 		const libraryTip = libraryEditions[0]?.id ?? null;
 		base.libraryTip = libraryTip;

@@ -15,6 +15,7 @@ const SECRET_KEYS = new Set([
 	"personKey",
 	"agentKey",
 	"stylebookKey",
+	"email",
 ]);
 
 export interface Failure {

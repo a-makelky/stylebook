@@ -66,9 +66,12 @@ export function whoFromPush(push: GatewayPush, note: EditionNote | null): Who {
 	};
 }
 
-export async function whoPublished(env: Env, edition: string): Promise<Who | null> {
+export async function whoPublished(env: Env, edition: string, workspaceId?: string): Promise<Who | null> {
 	const push = await pushForEdition(env.DB, edition);
 	if (!push) return null;
+	if (workspaceId && push.repoName !== `${workspaceId}-library` && !push.repoName.startsWith(`${workspaceId}-sug-`)) {
+		return null;
+	}
 	const text = await noteText(env, push.repoName, push.editionId);
 	return whoFromPush(push, text ? parseEditionNote(text) : null);
 }

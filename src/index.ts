@@ -9,7 +9,9 @@ import type { Env } from "./env";
 import { handleGit } from "./gateway";
 import { sanitize, describeError } from "./redact";
 import { handleScreen } from "./screen";
+import { LIMIT_MESSAGE, limitsOf } from "./limits";
 import { d1ArrivalLog, d1AuditLog, runSwarm, workflowLauncher, MAX_SESSIONS } from "./swarm";
+import { openSuggestionCount } from "./teams";
 import { runTracer } from "./tracer";
 import { whoPublished } from "./who";
 import { ArrivalWorkflow, SuggestionWorkflow } from "./workflows";
@@ -97,7 +99,7 @@ export default {
 				return json({ ok: false, error: "edition must be an edition id." }, 400);
 			}
 			try {
-				const who = await whoPublished(env, edition.toLowerCase());
+				const who = await whoPublished(env, edition.toLowerCase(), signedIn.actor.workspaceId);
 				if (!who) return json({ ok: false, error: "Nobody is recorded for that edition." }, 404);
 				return json(sanitize({ ok: true, ...who }));
 			} catch (error) {
@@ -250,6 +252,13 @@ export default {
 				if (agent.ownerId !== person.id) {
 					return json({ ok: false, error: "That agent does not work for that person." }, 403);
 				}
+				if (agent.workspaceId !== person.workspaceId) {
+					return json({ ok: false, error: "That agent does not work for that person." }, 403);
+				}
+				const open = await openSuggestionCount(env.DB, agent.workspaceId);
+				if (open + n > limitsOf(env).openSuggestions) {
+					return json({ ok: false, error: LIMIT_MESSAGE.openSuggestions }, 429);
+				}
 				const report = await runSwarm({
 					workspace: env.WORKSPACE,
 					launcher: workflowLauncher(env.SUGGESTIONS),
@@ -265,6 +274,7 @@ export default {
 					},
 					n,
 					actor: agent.id,
+					workspaceId: agent.workspaceId,
 					runner: "workflow-instances",
 				});
 				return json(sanitize(report));

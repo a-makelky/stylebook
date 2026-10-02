@@ -51,11 +51,13 @@ async function forward(request: IncomingMessage, response: ServerResponse, env: 
 	});
 	const outgoing = await worker.fetch(incoming, env);
 	const bytes = Buffer.from(await outgoing.arrayBuffer());
-	const outHeaders: Record<string, string> = {};
+	const outHeaders: Record<string, string | string[]> = {};
+	const cookies = outgoing.headers.getSetCookie?.() ?? [];
 	outgoing.headers.forEach((value, key) => {
-		if (key === "content-length" || key === "transfer-encoding") return;
+		if (key === "content-length" || key === "transfer-encoding" || key === "set-cookie") return;
 		outHeaders[key] = value;
 	});
+	if (cookies.length > 0) outHeaders["set-cookie"] = cookies;
 	response.writeHead(outgoing.status, outHeaders);
 	response.end(bytes);
 }

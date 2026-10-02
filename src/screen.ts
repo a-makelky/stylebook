@@ -1,7 +1,26 @@
 // The review screen. One page: the library, the open suggestions, and history.
 // Words on this page follow design/README.md.
 
-import { actorFromRequest, clearCookie, keyCookie } from "./auth";
+import { actorFromRequest, chooseCookie, clearChooseCookie, clearCookie, keyCookie, readCookie, CHOOSE_COOKIE, signOut } from "./auth";
+import { listActors } from "./actors";
+import { issueSignInLink, noteSignInAttempt, peekLink, takeLink } from "./mail";
+import { LIMIT_MESSAGE, limitsOf } from "./limits";
+import {
+	chooseWorkspace,
+	cleanWorkspaceName,
+	connectAgent,
+	countMembers,
+	countWorkspaces,
+	freshAgentKey,
+	joinFromLink,
+	memberships,
+	removePerson,
+	renameAgent,
+	revokeAgentKey,
+	workspaceById,
+} from "./teams";
+import { scopedEnv } from "./usage";
+import { libraryName } from "./workspace";
 import { describeError } from "./redact";
 import type { Env } from "./env";
 import { icon } from "./icons";
@@ -180,7 +199,9 @@ export function renderDesk(desk: Desk, suggestion: string | null): string {
 			: desk.suggestions.map((entry) => suggestionCard(desk, entry, entry.name === selected?.name)).join("");
 
 	return page({
-		main: `<div class="desk">
+		main: `<p class="meta bar"><span>${esc(desk.workspaceName)}</span> <a href="/people">People and agents</a>
+      <form method="post" action="/sign-out"><button class="text" type="submit">Sign out</button></form></p>
+    <div class="desk">
       <nav class="contents"><h2>${icon("library", true)} Library</h2>${contents}</nav>
       <article class="page">
         <h1>${esc(desk.title)}</h1>
@@ -277,9 +298,14 @@ function page(parts: { main: string }): string {
   }
   .overlap { color: var(--red); }
   .notice { color: var(--green); font-style: italic; }
-  .sign-in { max-width: 36ch; padding: 48px 16px 64px; margin: 0 auto; }
-  .sign-in label, .sign-in input { display: block; width: 100%; font-size: 17px; }
-  .sign-in input { min-height: 44px; margin: 8px 0 16px; padding: 8px 12px; border: 1px solid var(--ink); border-radius: 3px; background: var(--paper); color: var(--ink); }
+  .sign-in, .sheet { max-width: 42rem; padding: 28px 16px 64px; margin: 0 auto; }
+  .sign-in label, .sign-in input, .sheet label, .sheet input, .sheet select { display: block; width: 100%; font-size: 17px; line-height: 1.5; }
+  .sign-in input, .sheet input, .sheet select { min-height: 44px; margin: 8px 0 16px; padding: 8px 12px; border: 1px solid var(--ink); border-radius: 3px; background: var(--paper); color: var(--ink); }
+  .sheet h1 { font-size: 44px; line-height: 1.1; font-weight: 500; letter-spacing: -0.015em; }
+  .person, .agent { border-top: 1px solid var(--rule); padding: 12px 0; }
+  .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .bar input { width: auto; flex: 1; min-width: 12rem; margin: 0; }
+  pre { white-space: pre-wrap; font: inherit; font-size: 16px; line-height: 1.5; margin: 8px 0 16px; }
   .history { border-top: 1px solid var(--rule); margin-top: 32px; }
   @media (max-width: 1099px) {
     header { padding-left: 16px; padding-right: 16px; }
@@ -300,15 +326,130 @@ ${parts.main}
 </html>`;
 }
 
-export function renderSignIn(message: string | null): string {
-	const note = message ? `<p class="overlap">${esc(message)}</p>` : "";
+export function renderGate(message: string | null, tone: "error" | "ok" = "error"): string {
+	const note = message ? `<p class="${tone === "ok" ? "notice" : "overlap"}">${esc(message)}</p>` : "";
 	return page({
-		main: `<form class="sign-in" method="post" action="/sign-in">
-      <label for="key">Stylebook key</label>
-      <input id="key" name="key" type="password" autocomplete="current-password" required>
+		main: `<div class="sheet">
+      <h1>Start a workspace</h1>
+      <form method="post" action="/start">
+        <label for="workspace">Workspace name</label>
+        <input id="workspace" name="workspace" autocomplete="organization" required>
+        <label for="start-email">Email</label>
+        <input id="start-email" name="email" type="email" autocomplete="email" required>
+        ${note}
+        <button class="primary" type="submit">Start</button>
+      </form>
+      <h2>Already in a workspace</h2>
+      <form method="post" action="/sign-in">
+        <label for="sign-email">Email</label>
+        <input id="sign-email" name="email" type="email" autocomplete="email" required>
+        <button class="secondary" type="submit">Send a sign-in link</button>
+      </form>
+    </div>`,
+	});
+}
+
+function setupMarkup(origin: string, workspaceId: string, key: string): string {
+	const host = origin.replace(/^https?:\/\//, "");
+	const mcp = JSON.stringify(
+		{
+			mcpServers: {
+				stylebook: {
+					url: `${origin}/mcp`,
+					headers: { Authorization: `Bearer ${key}` },
+				},
+			},
+		},
+		null,
+		2,
+	);
+	const folder = `git clone https://stylebook:${key}@${host}/git/${libraryName(workspaceId)}.git library`;
+	return `<h2>For Cursor or Claude Code</h2>
+    <p>Paste this where that tool keeps its connections. The key is in the header.</p>
+    <pre data-setup>${esc(mcp)}</pre>
+    <h2>For a folder on your computer</h2>
+    <p>Paste this to read the library. Saving a suggestion uses the same key.</p>
+    <pre data-setup>${esc(folder)}</pre>`;
+}
+
+function renderPeople(
+	workspaceName: string,
+	people: { id: string; name: string; you: boolean }[],
+	agents: { id: string; name: string; tool: string }[],
+	message: string | null,
+	reveal: { name: string; key: string; origin: string; workspaceId: string } | null,
+): string {
+	const note = message ? `<p class="overlap">${esc(message)}</p>` : "";
+	const shown = reveal
+		? `<p class="notice">This key for ${esc(reveal.name)} is shown once. Copy it now.</p>
+       <p><code>${esc(reveal.key)}</code></p>
+       ${setupMarkup(reveal.origin, reveal.workspaceId, reveal.key)}`
+		: "";
+	const personRows = people
+		.map(
+			(person) => `<div class="person bar"><span>${esc(person.name)}${person.you ? " (you)" : ""}</span>
+        ${
+					person.you
+						? ""
+						: `<form method="post" action="/people/remove">${hidden("id", person.id)}<button class="text" type="submit">Remove</button></form>`
+				}</div>`,
+		)
+		.join("");
+	const agentRows = agents
+		.map(
+			(agent) => `<div class="agent">
+        <p>${esc(agent.name)} <span class="meta">${esc(agent.tool)}</span></p>
+        <form method="post" action="/agents/rename" class="bar">${hidden("id", agent.id)}
+          <label for="rename-${esc(agent.id)}">Name</label>
+          <input id="rename-${esc(agent.id)}" name="name" value="${esc(agent.name)}" required>
+          <button class="secondary" type="submit">Rename</button>
+        </form>
+        <form method="post" action="/agents/revoke">${hidden("id", agent.id)}<button class="text" type="submit">Revoke the key</button></form>
+        <form method="post" action="/agents/key">${hidden("id", agent.id)}<button class="text" type="submit">Make a new key</button></form>
+      </div>`,
+		)
+		.join("");
+	return page({
+		main: `<div class="sheet">
+      <p class="meta"><a href="/">Library</a></p>
+      <h1>${esc(workspaceName)}</h1>
       ${note}
-      <button class="primary" type="submit">Open the library</button>
-    </form>`,
+      ${shown}
+      <h2>Invite a colleague</h2>
+      <form method="post" action="/invite">
+        <label for="invite-email">Email</label>
+        <input id="invite-email" name="email" type="email" autocomplete="email" required>
+        <button class="primary" type="submit">Send an invite</button>
+      </form>
+      <h2>People</h2>
+      ${personRows || `<p class="meta">Just you, so far.</p>`}
+      <h2>Connect an agent</h2>
+      <form method="post" action="/agents">
+        <label for="agent-name">Name</label>
+        <input id="agent-name" name="name" required placeholder="Claude, working for me">
+        <label for="tool">Tool</label>
+        <select id="tool" name="tool">
+          <option value="cursor">Cursor</option>
+          <option value="claude">Claude Code</option>
+          <option value="other">Another tool</option>
+        </select>
+        <button class="primary" type="submit">Connect</button>
+      </form>
+      ${agentRows}
+      <form method="post" action="/sign-out"><button class="text" type="submit">Sign out</button></form>
+    </div>`,
+	});
+}
+
+function renderChoose(workspaces: { id: string; name: string }[]): string {
+	const options = workspaces
+		.map(
+			(workspace) => `<form method="post" action="/choose">${hidden("workspace", workspace.id)}
+        <button class="secondary" type="submit">Open ${esc(workspace.name)}</button></form>`,
+		)
+		.join("");
+	return page({
+		main: `<div class="sheet"><h1>Open a workspace</h1>${options}</div>`,
 	});
 }
 
@@ -337,93 +478,256 @@ async function fields(request: Request): Promise<URLSearchParams> {
 	return new URLSearchParams(await request.text());
 }
 
+
 export async function handleScreen(request: Request, env: Env): Promise<Response | null> {
 	const url = new URL(request.url);
 	const path = url.pathname;
+	const link = /^\/s\/([0-9a-f]{64})$/.exec(path);
 	const screen =
 		path === "/" ||
+		path === "/start" ||
 		path === "/sign-in" ||
 		path === "/sign-out" ||
+		path === "/choose" ||
+		path === "/people" ||
+		path === "/invite" ||
+		path === "/agents" ||
+		path === "/agents/rename" ||
+		path === "/agents/revoke" ||
+		path === "/agents/key" ||
+		path === "/people/remove" ||
 		path === "/publish" ||
 		path === "/resolve" ||
 		path === "/decline" ||
-		path === "/suggestion";
+		path === "/suggestion" ||
+		Boolean(link);
 	if (!screen) return null;
 
 	try {
+		if (request.method === "GET" && link) {
+			const joined = await joinFromLink(env, link[1] ?? "");
+			if ("message" in joined) return html(renderGate(joined.message), 400);
+			if ("choose" in joined) {
+				return html(renderChoose(joined.choose.workspaces), 200, { "Set-Cookie": chooseCookie(joined.choose.secret) });
+			}
+			return redirectCookies("/", [keyCookie(joined.joined.secret), clearChooseCookie()]);
+		}
+
+		if (request.method === "POST" && path === "/start") {
+			const form = await fields(request);
+			const workspace = cleanWorkspaceName(form.get("workspace") ?? "");
+			const email = form.get("email") ?? "";
+			if (!workspace) return html(renderGate("Give the workspace a short name."), 400);
+			if ((await countWorkspaces(env.DB)) >= limitsOf(env).workspaces) {
+				return html(renderGate(LIMIT_MESSAGE.workspaces), 429);
+			}
+			const sent = await issueSignInLink(env, request, url.origin, {
+				email,
+				purpose: "start",
+				workspaceName: workspace,
+			});
+			return html(renderGate(sent.message, sent.ok ? "ok" : "error"), sent.ok ? 200 : sent.status);
+		}
+
 		if (request.method === "POST" && path === "/sign-in") {
 			const form = await fields(request);
-			const key = form.get("key")?.trim() ?? "";
-			const probe = new Request(request.url, { headers: { Authorization: `Bearer ${key}` } });
-			const signed = await actorFromRequest(probe, env);
-			if (!signed) return html(renderSignIn("That key is not a Stylebook key."), 401);
-			return redirect("/", { "Set-Cookie": keyCookie(signed.key) });
+			const email = form.get("email") ?? "";
+			const homes = email.includes("@") ? await memberships(env.DB, email.trim().toLowerCase()) : [];
+			const sent =
+				homes.length === 0
+					? await noteSignInAttempt(env, request, email)
+					: await issueSignInLink(env, request, url.origin, { email, purpose: "sign-in" });
+			return html(renderGate(sent.message, sent.ok ? "ok" : "error"), sent.ok ? 200 : sent.status);
+		}
+
+		if (request.method === "POST" && path === "/choose") {
+			const secret = readCookie(request, CHOOSE_COOKIE);
+			const form = await fields(request);
+			const workspaceId = form.get("workspace") ?? "";
+			if (!secret) return html(renderGate("That link has expired or was already used."), 400);
+			const taken = await takeLink(env, secret);
+			if (!taken || taken.purpose !== "choose") return html(renderGate("That link has expired or was already used."), 400);
+			const joined = await chooseWorkspace(env, taken.email, workspaceId);
+			if ("message" in joined) return html(renderGate(joined.message), 400);
+			return redirectCookies("/", [keyCookie(joined.secret), clearChooseCookie()]);
+		}
+
+		if (request.method === "GET" && path === "/choose") {
+			const secret = readCookie(request, CHOOSE_COOKIE);
+			if (!secret) return html(renderGate("That link has expired or was already used."), 400);
+			const pending = await peekLink(env, secret);
+			if (!pending) return html(renderGate("That link has expired or was already used."), 400);
+			const homes = await memberships(env.DB, pending.email);
+			return html(renderChoose(homes.map((item) => item.workspace)));
 		}
 
 		if (request.method === "POST" && path === "/sign-out") {
+			await signOut(request, env);
 			return redirect("/", { "Set-Cookie": clearCookie() });
 		}
 
 		const signed = await actorFromRequest(request, env);
 		if (!signed) {
-			if (request.method === "GET" && path === "/") return html(renderSignIn(null));
-			return html(renderSignIn("Open the library with your Stylebook key."), 401);
+			if (request.method === "GET" && path === "/") return html(renderGate(null));
+			return html(renderGate("Send yourself a sign-in link to open the library."), 401);
 		}
 
-		if (request.method === "POST" && path === "/suggestion") {
-			const body = (await request.json().catch(() => ({}))) as {
-				session?: unknown;
-				path?: unknown;
-				content?: unknown;
-				why?: unknown;
-			};
-			const saved = await saveAgentSuggestion(env, signed.actor, signed.key, url.origin, {
-				session: typeof body.session === "string" ? body.session : crypto.randomUUID().slice(0, 8),
-				path: typeof body.path === "string" ? body.path : "",
-				content: typeof body.content === "string" ? body.content : "",
-				why: typeof body.why === "string" ? body.why : "",
-			});
-			return Response.json({ ok: true, name: saved.name, edition: saved.edition });
+		if (signed.actor.kind === "person" && request.method === "GET" && path === "/people") {
+			return peoplePage(env, signed.actor, url.origin, url.searchParams.get("notice"), null);
 		}
 
-		if (request.method === "GET" && path === "/") {
-			const item = cleanPath(url.searchParams.get("item"));
-			const suggestion = cleanName(url.searchParams.get("suggestion"));
-			const notice = url.searchParams.get("notice");
-			const before = url.searchParams.get("before");
-			const desk = await loadDesk(env, signed.actor, signed.key, url.origin, item, suggestion, notice, before);
-			return html(renderDesk(desk, suggestion));
-		}
-
-		if (request.method === "POST" && (path === "/publish" || path === "/resolve" || path === "/decline")) {
+		if (signed.actor.kind === "person" && request.method === "POST" && path === "/invite") {
 			const form = await fields(request);
-			const item = cleanPath(form.get("item"));
-			const suggestion = cleanName(form.get("suggestion"));
-			if (!item || !suggestion) throw new DeskError("Choose a suggestion first.");
-			if (path === "/decline") {
-				await declineSuggestion(env, signed.actor, suggestion, item);
-				return redirect(back(item, null, "Declined."));
+			const email = (form.get("email") ?? "").trim().toLowerCase();
+			const homes = await memberships(env.DB, email);
+			const already = homes.some((item) => item.workspace.id === signed.actor.workspaceId);
+			if (!already && (await countMembers(env.DB, signed.actor.workspaceId, "person")) >= limitsOf(env).people) {
+				return peoplePage(env, signed.actor, url.origin, LIMIT_MESSAGE.people, null);
 			}
-			if (path === "/resolve" && form.get("mode") === "combine") {
-				const name = await combineSuggestions(env, signed.actor, url.origin, suggestion, item);
-				return redirect(back(item, name, "Combined into a new suggestion."));
+			const workspace = await workspaceById(env.DB, signed.actor.workspaceId);
+			const sent = await issueSignInLink(env, request, url.origin, {
+				email,
+				purpose: "invite",
+				workspaceId: signed.actor.workspaceId,
+				workspaceName: workspace?.name ?? null,
+				invitedBy: signed.actor.id,
+			});
+			return peoplePage(env, signed.actor, url.origin, sent.ok ? SENT : sent.message, null);
+		}
+
+		if (signed.actor.kind === "person" && request.method === "POST" && path === "/people/remove") {
+			const form = await fields(request);
+			const problem = await removePerson(env, signed.actor, form.get("id") ?? "");
+			return peoplePage(env, signed.actor, url.origin, problem, null);
+		}
+
+		if (signed.actor.kind === "person" && request.method === "POST" && path === "/agents") {
+			const form = await fields(request);
+			const connected = await connectAgent(env, signed.actor, form.get("name") ?? "", form.get("tool") ?? "other");
+			if ("message" in connected) return peoplePage(env, signed.actor, url.origin, connected.message, null);
+			return peoplePage(env, signed.actor, url.origin, null, { name: connected.actor.name, key: connected.key });
+		}
+
+		if (signed.actor.kind === "person" && request.method === "POST" && path === "/agents/rename") {
+			const form = await fields(request);
+			const problem = await renameAgent(env, signed.actor, form.get("id") ?? "", form.get("name") ?? "");
+			return peoplePage(env, signed.actor, url.origin, problem, null);
+		}
+
+		if (signed.actor.kind === "person" && request.method === "POST" && path === "/agents/revoke") {
+			const form = await fields(request);
+			const problem = await revokeAgentKey(env, signed.actor, form.get("id") ?? "");
+			return peoplePage(env, signed.actor, url.origin, problem ?? "The key no longer works.", null);
+		}
+
+		if (signed.actor.kind === "person" && request.method === "POST" && path === "/agents/key") {
+			const form = await fields(request);
+			const minted = await freshAgentKey(env, signed.actor, form.get("id") ?? "");
+			if ("message" in minted) return peoplePage(env, signed.actor, url.origin, minted.message, null);
+			return peoplePage(env, signed.actor, url.origin, null, { name: "This agent", key: minted.key });
+		}
+
+		const scoped = scopedEnv(env, signed.actor.workspaceId);
+		try {
+			if (request.method === "POST" && path === "/suggestion") {
+				const body = (await request.json().catch(() => ({}))) as {
+					session?: unknown;
+					path?: unknown;
+					content?: unknown;
+					why?: unknown;
+				};
+				const saved = await saveAgentSuggestion(scoped.env, signed.actor, signed.key, url.origin, {
+					session: typeof body.session === "string" ? body.session : crypto.randomUUID().slice(0, 8),
+					path: typeof body.path === "string" ? body.path : "",
+					content: typeof body.content === "string" ? body.content : "",
+					why: typeof body.why === "string" ? body.why : "",
+				});
+				return Response.json({ ok: true, name: saved.name, edition: saved.edition });
 			}
-			const mode = path === "/publish" ? "publish" : form.get("mode") === "keep-other" ? "keep-other" : "keep-this";
-			const notice = await publishSuggestion(env, signed.actor, signed.key, url.origin, suggestion, item, mode);
-			const stay = notice.startsWith("Nothing was published") || notice.startsWith("Kept the current");
-			return redirect(back(item, stay ? suggestion : null, notice));
+
+			if (request.method === "GET" && path === "/") {
+				const item = cleanPath(url.searchParams.get("item"));
+				const suggestion = cleanName(url.searchParams.get("suggestion"));
+				const notice = url.searchParams.get("notice");
+				const before = url.searchParams.get("before");
+				const desk = await loadDesk(scoped.env, signed.actor, signed.key, url.origin, item, suggestion, notice, before);
+				return html(renderDesk(desk, suggestion));
+			}
+
+			if (request.method === "POST" && (path === "/publish" || path === "/resolve" || path === "/decline")) {
+				const form = await fields(request);
+				const item = cleanPath(form.get("item"));
+				const suggestion = cleanName(form.get("suggestion"));
+				if (!item || !suggestion) throw new DeskError("Choose a suggestion first.");
+				if (path === "/decline") {
+					await declineSuggestion(scoped.env, signed.actor, suggestion, item);
+					return redirect(back(item, null, "Declined."));
+				}
+				if (path === "/resolve" && form.get("mode") === "combine") {
+					const name = await combineSuggestions(scoped.env, signed.actor, url.origin, suggestion, item);
+					return redirect(back(item, name, "Combined into a new suggestion."));
+				}
+				const mode = path === "/publish" ? "publish" : form.get("mode") === "keep-other" ? "keep-other" : "keep-this";
+				const notice = await publishSuggestion(
+					scoped.env,
+					signed.actor,
+					signed.key,
+					url.origin,
+					suggestion,
+					item,
+					mode,
+				);
+				const stay = notice.startsWith("Nothing was published") || notice.startsWith("Kept the current");
+				return redirect(back(item, stay ? suggestion : null, notice));
+			}
+		} finally {
+			await scoped.flush();
 		}
 	} catch (error) {
 		if (error instanceof DeskError) {
 			if (path === "/suggestion") return Response.json({ ok: false, error: error.message }, { status: error.status });
-			return html(renderSignIn(error.message), error.status);
+			return html(renderGate(error.message), error.status);
 		}
+		const failure = describeError(error);
+		console.error(failure.code, failure.message);
 		if (path === "/suggestion") {
-			const failure = describeError(error);
-			console.error(failure.code, failure.message);
 			return Response.json({ ok: false, error: "The suggestion could not be saved." }, { status: 500 });
 		}
-		return html(renderSignIn("The library could not be opened. Try again."), 500);
+		return html(renderGate("The library could not be opened. Try again."), 500);
 	}
-	return html(renderSignIn(null), 405);
+	return html(renderGate(null), 405);
+}
+
+const SENT = "Check your inbox. The link works once and expires in 15 minutes.";
+
+function redirectCookies(location: string, cookies: string[]): Response {
+	const headers = new Headers({ Location: location });
+	for (const cookie of cookies) headers.append("Set-Cookie", cookie);
+	return new Response(null, { status: 303, headers });
+}
+
+async function peoplePage(
+	env: Env,
+	actor: { id: string; name: string; workspaceId: string; kind: string },
+	origin: string,
+	message: string | null,
+	reveal: { name: string; key: string } | null,
+): Promise<Response> {
+	const workspace = await workspaceById(env.DB, actor.workspaceId);
+	const actors = await listActors(env.DB, actor.workspaceId);
+	const people = actors
+		.filter((item) => item.kind === "person")
+		.map((item) => ({ id: item.id, name: item.name, you: item.id === actor.id }));
+	const agents = actors
+		.filter((item) => item.kind === "agent" && item.ownerId === actor.id)
+		.map((item) => ({ id: item.id, name: item.name, tool: item.model ?? "Another tool" }));
+	return html(
+		renderPeople(
+			workspace?.name ?? "Workspace",
+			people,
+			agents,
+			message,
+			reveal ? { ...reveal, origin, workspaceId: actor.workspaceId } : null,
+		),
+	);
 }

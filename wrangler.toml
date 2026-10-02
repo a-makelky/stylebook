@@ -13,15 +13,30 @@ preview_urls = true
 # https://developers.cloudflare.com/workers/observability/errors/
 compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 
-# One Artifacts namespace is one workspace. The library and every suggestion
-# copy live in it, because a copy made with fork() stays in its source namespace.
-# stylebook-demo is an earlier workspace and is not bound.
+# The Workers binding addresses one namespace. Methods take a repo name, not a
+# namespace, so each team is a prefix on the repo name. stylebook-review and
+# stylebook-demo stay in the account and are not bound.
+# https://developers.cloudflare.com/artifacts/api/workers-binding/
 # https://developers.cloudflare.com/artifacts/concepts/namespaces/
-# https://developers.cloudflare.com/artifacts/concepts/best-practices/
 [[artifacts]]
 binding = "WORKSPACE"
-namespace = "stylebook-review"
+namespace = "stylebook"
 remote = true # local dev talks to the real Artifacts service
+
+# Sign-in email from one sender.
+# https://developers.cloudflare.com/email-service/configuration/send-bindings/
+[[send_email]]
+name = "EMAIL"
+allowed_sender_addresses = [ "sign-in@stylebook.dev" ]
+
+# Starting limits. https://developers.cloudflare.com/artifacts/platform/pricing/
+[vars]
+MAX_WORKSPACES = "40"
+MAX_PEOPLE = "25"
+MAX_AGENTS = "40"
+MAX_OPEN_SUGGESTIONS = "200"
+MAX_SIGN_IN_EMAILS_PER_HOUR = "5"
+MAX_SIGN_IN_EMAILS_PER_IP_PER_HOUR = "20"
 
 # Demo address. Remove this block when the domain is not in your account.
 # https://developers.cloudflare.com/workers/configuration/routing/custom-domains/
@@ -58,7 +73,7 @@ class_name = "ArrivalWorkflow"
 type = "cf.artifacts.repo.pushed"
 
   [triggers.events.filter]
-  namespace = "stylebook-review"
+  namespace = "stylebook"
 
   [[triggers.events.targets]]
   type = "workflow"
