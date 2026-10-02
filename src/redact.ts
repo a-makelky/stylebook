@@ -11,6 +11,10 @@ const SECRET_KEYS = new Set([
 	"accountId",
 	"account_id",
 	"headers",
+	"key",
+	"personKey",
+	"agentKey",
+	"stylebookKey",
 ]);
 
 export interface Failure {
@@ -22,6 +26,7 @@ export interface Failure {
 export function redact(value: string): string {
 	return value
 		.replace(/art_v1_[A-Za-z0-9._~-]+/g, "<token>")
+		.replace(/\bsbk_[A-Za-z0-9_-]+/g, "<key>")
 		.replace(/https?:\/\/[^\s"'<>]+/gi, "<url>")
 		.replace(/\?expires=\d+/g, "")
 		.slice(0, 400);

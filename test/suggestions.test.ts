@@ -1,4 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
+import { registerActor } from "../src/actors";
+import { auditSince } from "../src/audit";
 import { matchArrivals, toArrival, type ArrivalRow } from "../src/arrivals";
 import { EDIT_COUNT, editAt, applyEdit } from "../src/edits";
 import type { Env } from "../src/env";
@@ -11,6 +13,8 @@ import { LIBRARY } from "../src/workspace";
 import { ArrivalWorkflow } from "../src/workflows";
 import type { WorkflowStep } from "cloudflare:workers";
 import { FakeWorkspace } from "./fake-artifacts";
+import { memoryD1 } from "./memory-d1";
+import { serveWorker } from "./serve";
 
 const WAIT = { attempts: 5, delayMs: 5 };
 const ACCOUNT = "deadbeefdeadbeefdeadbeefdeadbeef";
@@ -159,14 +163,40 @@ describe("secrets stay out of responses", () => {
 	});
 });
 
+const PERSON_KEY = "test-person-key-0001";
+const CURSOR_KEY = "test-cursor-key-0001";
+
 describe("many sessions at once", () => {
 	let workspace: FakeWorkspace;
+	let db: D1Database;
+	let origin = "";
+	let close: () => Promise<void> = async () => {};
 
 	beforeAll(async () => {
 		workspace = await FakeWorkspace.start();
+		db = memoryD1();
+		await registerActor(db, { id: "editor", kind: "person", name: "Aaron", key: PERSON_KEY });
+		await registerActor(db, {
+			id: "cursor",
+			kind: "agent",
+			name: "Cursor",
+			ownerId: "editor",
+			model: "cursor",
+			key: CURSOR_KEY,
+		});
+		const server = await serveWorker({
+			WORKSPACE: workspace.binding,
+			DEMO_KEY: "secret",
+			DB: db,
+			SUGGESTIONS: unusedWorkflow,
+			ARRIVALS: unusedWorkflow,
+		} as Env);
+		origin = server.url;
+		close = server.close;
 	});
 
 	afterAll(async () => {
+		await close();
 		await workspace.stop();
 	});
 
@@ -175,8 +205,16 @@ describe("many sessions at once", () => {
 			workspace: workspace.binding,
 			launcher: inlineLauncher(workspace.binding),
 			arrivals: emptyLog,
+			gateway: {
+				origin,
+				personKey: PERSON_KEY,
+				agentKey: CURSOR_KEY,
+				actorName: "Cursor",
+				ownerName: "Aaron",
+				model: "cursor",
+			},
 			n: 8,
-			actor: "agent",
+			actor: "cursor",
 			runId: "local01",
 			arrivalWaitMs: 0,
 			runner: "inline",
@@ -216,14 +254,31 @@ describe("many sessions at once", () => {
 		);
 		expect(new Set(texts).size).toBe(texts.length);
 
-		expect(report.notes.pushed).toBe(true);
 		expect(report.notes.ref).toBe(NOTES_REF);
-		expect(workspace.git(report.notes.repoName!, "show-ref")).toContain(NOTES_REF);
+		expect(report.notes.pushed).toBe(8);
+		expect(report.audit).toBeNull();
+		for (const session of report.sessions) {
+			const shown = workspace.git(session.name, "notes", "--ref=stylebook", "show", session.edition!);
+			expect(shown).toContain("actor: Cursor");
+			expect(shown).toContain("on behalf of: Aaron");
+			expect(shown).toContain("model: cursor");
+			expect(shown).toContain("run: local01");
+			expect(shown).toContain(session.edit.summary);
+		}
+
+		const recorded = await auditSince(db, report.startedAt);
+		const byCursor = recorded.gateway.filter((row) => row.actorId === "cursor");
+		expect(byCursor.length).toBe(16);
+		expect(recorded.gateway.filter((row) => row.repoName === LIBRARY).every((row) => row.actorId === "editor")).toBe(
+			true,
+		);
 		expect(report.arrivals.missing.length).toBeGreaterThan(0);
 
 		const text = JSON.stringify(report);
 		expect(text).not.toContain("art_v1_");
 		expect(text).not.toContain("127.0.0.1");
+		expect(text).not.toContain(CURSOR_KEY);
+		expect(text).not.toContain(PERSON_KEY);
 	}, 120_000);
 
 	it("treats serial sessions as not overlapping", () => {
@@ -273,21 +328,25 @@ function stubSession(
 		editionCount: 2,
 		onTopOfLibrary: true,
 		alreadyApplied: false,
+		noteCommit: null,
 		failures: [],
 	};
 }
 
 describe("arrival workflow", () => {
-	it("writes one row from the push event and nothing else", async () => {
-		const bound: unknown[][] = [];
+	it("writes the arrival, then flags a push the gateway did not record", async () => {
+		const runs: { sql: string; values: unknown[] }[] = [];
 		const db = {
-			prepare() {
+			prepare(sql: string) {
 				return {
 					bind(...values: unknown[]) {
 						return {
 							async run() {
-								bound.push(values);
+								runs.push({ sql, values });
 								return { success: true };
+							},
+							async first() {
+								return null;
 							},
 						};
 					},
@@ -296,7 +355,7 @@ describe("arrival workflow", () => {
 		} as unknown as D1Database;
 
 		const workflow = new ArrivalWorkflow({} as ExecutionContext, { DB: db } as Env);
-		await workflow.run(
+		const result = await workflow.run(
 			{
 				payload: {
 					source: { repoName: "sug-agent-one" },
@@ -311,14 +370,16 @@ describe("arrival workflow", () => {
 				async do(_name: string, callback: () => Promise<unknown>) {
 					return callback();
 				},
+				async sleep() {},
 			} as unknown as WorkflowStep,
 		);
 
-		expect(bound).toHaveLength(1);
-		expect(JSON.stringify(bound)).not.toContain(ACCOUNT);
-		expect(bound[0]?.[0]).toBe("sug-agent-one");
-		expect(bound[0]?.[3]).toBe("suggestion");
-		expect(bound[0]?.[2]).toBe(SHA);
+		expect(JSON.stringify(runs)).not.toContain(ACCOUNT);
+		expect(runs[0]?.values[0]).toBe("sug-agent-one");
+		expect(runs[0]?.values[3]).toBe("suggestion");
+		expect(runs[0]?.values[2]).toBe(SHA);
+		expect(runs.some((run) => run.sql.includes("unseen_pushes"))).toBe(true);
+		expect(result).toMatchObject({ outcome: "flagged", editionId: SHA });
 	});
 });
 
@@ -363,11 +424,21 @@ describe("suggestions route", () => {
 	});
 
 	it("scrubs a failure that contains a remote and a token", async () => {
+		const db = memoryD1();
+		await registerActor(db, { id: "editor", kind: "person", name: "Aaron", key: PERSON_KEY });
+		await registerActor(db, {
+			id: "cursor",
+			kind: "agent",
+			name: "Cursor",
+			ownerId: "editor",
+			model: "cursor",
+			key: CURSOR_KEY,
+		});
 		const response = await worker.fetch(
 			new Request("https://stylebook.test/demo/suggestions", {
 				method: "POST",
 				headers: { Authorization: "Bearer secret", "Content-Type": "application/json" },
-				body: JSON.stringify({ n: 1 }),
+				body: JSON.stringify({ n: 1, key: CURSOR_KEY, personKey: PERSON_KEY }),
 			}),
 			{
 				WORKSPACE: {
@@ -379,7 +450,7 @@ describe("suggestions route", () => {
 					},
 				} as unknown as Artifacts,
 				DEMO_KEY: "secret",
-				DB: unusedDb,
+				DB: db,
 				SUGGESTIONS: unusedWorkflow,
 				ARRIVALS: unusedWorkflow,
 			} as Env,

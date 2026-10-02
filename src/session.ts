@@ -3,30 +3,40 @@
 // https://developers.cloudflare.com/artifacts/concepts/best-practices/
 
 import { applyEdit, editAt, type EditKind } from "./edits";
-import { publishFile } from "./git";
+import { gatewayRemote } from "./gateway";
+import { publishSavedEdition } from "./git";
+import { editionNote } from "./notes";
 import { describeError, type Failure } from "./redact";
 import { STARTER_SKILL_PATH } from "./seed";
-import { DEMO_AUTHOR } from "./tracer";
 import {
 	ensureLibrary,
 	ensureSuggestion,
 	listEditions,
 	readBytes,
 	suggestionName,
-	writeAccess,
 	type GetReport,
 	type WaitOptions,
 } from "./workspace";
 
-/** Short on purpose. Minted immediately before the write and never returned. */
-const WRITE_TTL_SECONDS = 120;
 const PUBLISH_ATTEMPTS = 3;
+const AGENT_EMAIL = "agent@stylebook.invalid";
+
+/** How a session reaches the Git route. The key is the actor's Stylebook key. */
+export interface SessionGateway {
+	origin: string;
+	key: string;
+	actorName: string;
+	ownerName: string;
+	model: string;
+}
 
 export interface SessionParams {
 	actor: string;
 	session: string;
 	editIndex: number;
 	runId: string;
+	/** Set by the route. The session pushes through the Git route as this actor. */
+	gateway: SessionGateway;
 }
 
 export interface SessionResult {
@@ -52,6 +62,8 @@ export interface SessionResult {
 	/** The new edition's parent is the library tip this copy was made from. */
 	onTopOfLibrary: boolean;
 	alreadyApplied: boolean;
+	/** The notes commit, when the edition's note was pushed. */
+	noteCommit: string | null;
 	failures: Failure[];
 }
 
@@ -97,6 +109,7 @@ export async function runSuggestionSession(
 		editionCount: null as number | null,
 		onTopOfLibrary: false,
 		alreadyApplied: false,
+		noteCommit: null as string | null,
 		failures,
 	};
 
@@ -149,19 +162,30 @@ export async function runSuggestionSession(
 			return finish({ ...base, ok: true }, startedMs);
 		}
 
+		const author = { name: params.gateway.actorName, email: AGENT_EMAIL };
 		let edition: string | null = null;
 		for (let attempt = 1; attempt <= PUBLISH_ATTEMPTS; attempt++) {
 			try {
-				const access = await writeAccess(suggestion.repo, WRITE_TTL_SECONDS);
-				edition = await publishFile({
-					remote: access.remote,
-					token: access.token,
+				const saved = await publishSavedEdition({
+					remote: gatewayRemote(params.gateway.origin, name),
+					token: params.gateway.key,
 					path: STARTER_SKILL_PATH,
 					content: next,
 					message: edit.summary,
-					author: DEMO_AUTHOR,
+					author,
 					hasHistory: true,
+					note: {
+						text: editionNote({
+							actor: params.gateway.actorName,
+							onBehalfOf: params.gateway.ownerName,
+							model: params.gateway.model,
+							runId: params.runId,
+							intent: edit.summary,
+						}),
+					},
 				});
+				edition = saved.edition;
+				base.noteCommit = saved.noteCommit;
 				break;
 			} catch (error) {
 				failures.push(describeError(error, attempt));
@@ -179,7 +203,7 @@ export async function runSuggestionSession(
 		base.onTopOfLibrary = Boolean(
 			base.edition && base.parentEdition && base.parentEdition === libraryTip && base.edition !== libraryTip,
 		);
-		return finish({ ...base, ok: base.onTopOfLibrary }, startedMs);
+		return finish({ ...base, ok: base.onTopOfLibrary && Boolean(base.noteCommit) }, startedMs);
 	} catch (error) {
 		failures.push(describeError(error, failures.length + 1));
 		return finish({ ...base, ok: false }, startedMs);

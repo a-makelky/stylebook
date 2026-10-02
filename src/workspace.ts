@@ -39,6 +39,15 @@ export function suggestionName(actor: string, session: string): string {
 	return `sug-${slug(actor)}-${slug(session)}`.slice(0, 63);
 }
 
+/** Prefix of every copy that belongs to one actor. The trailing hyphen keeps `sug-a-` from matching `sug-agent-`. */
+export function copyPrefix(actorId: string): string {
+	return `sug-${slug(actorId)}-`;
+}
+
+export function ownsCopy(actorId: string, repoName: string): boolean {
+	return repoName.startsWith(copyPrefix(actorId));
+}
+
 export interface WaitOptions {
 	attempts?: number;
 	delayMs?: number;

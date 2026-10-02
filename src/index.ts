@@ -1,7 +1,12 @@
+import { listActors, registerActor, actorByKey, type ActorInput } from "./actors";
+import { auditSince, isUnseen } from "./audit";
+import { publishDirect } from "./bypass";
 import type { Env } from "./env";
+import { handleGit } from "./gateway";
 import { sanitize, describeError } from "./redact";
-import { d1ArrivalLog, runSwarm, workflowLauncher, MAX_SESSIONS } from "./swarm";
+import { d1ArrivalLog, d1AuditLog, runSwarm, workflowLauncher, MAX_SESSIONS } from "./swarm";
 import { runTracer } from "./tracer";
+import { whoPublished } from "./who";
 import { ArrivalWorkflow, SuggestionWorkflow } from "./workflows";
 
 export { ArrivalWorkflow, SuggestionWorkflow };
@@ -41,12 +46,109 @@ function checkDemoKey(request: Request, env: Env): Response | null {
 	return null;
 }
 
+/** The demo key or any registered actor key. Returns a response when the caller is refused. */
+async function demoOrActor(request: Request, env: Env): Promise<Response | null> {
+	if (!env.DEMO_KEY) {
+		return json({ ok: false, error: "The DEMO_KEY secret is not set on this Worker." }, 503);
+	}
+	const header = request.headers.get("Authorization") ?? "";
+	const sent = header.startsWith("Bearer ") ? header.slice(7) : "";
+	if (sent && sameString(sent, env.DEMO_KEY)) return null;
+	if (sent && (await actorByKey(env.DB, sent))) return null;
+	return json({ ok: false, error: "Missing or unknown key." }, 401);
+}
+
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		const url = new URL(request.url);
 
 		if (request.method === "GET" && url.pathname === "/health") {
 			return json({ ok: true, name: "stylebook" });
+		}
+
+		if (url.pathname.startsWith("/git/")) {
+			try {
+				return await handleGit(request, env);
+			} catch (error) {
+				const failure = describeError(error);
+				return json(sanitize({ ok: false, error: failure.message, code: failure.code }), 500);
+			}
+		}
+
+		if (request.method === "GET" && url.pathname === "/who") {
+			const allowed = await demoOrActor(request, env);
+			if (allowed) return allowed;
+			const edition = url.searchParams.get("edition") ?? "";
+			if (!/^[0-9a-f]{40}$/i.test(edition)) {
+				return json({ ok: false, error: "edition must be an edition id." }, 400);
+			}
+			try {
+				const who = await whoPublished(env, edition.toLowerCase());
+				if (!who) return json({ ok: false, error: "Nobody is recorded for that edition." }, 404);
+				return json(sanitize({ ok: true, ...who }));
+			} catch (error) {
+				const failure = describeError(error);
+				return json(sanitize({ ok: false, error: failure.message, code: failure.code }), 500);
+			}
+		}
+
+		if (url.pathname === "/demo/actors") {
+			const denied = checkDemoKey(request, env);
+			if (denied) return denied;
+			try {
+				if (request.method === "GET") {
+					const actors = await listActors(env.DB);
+					return json(sanitize({ ok: true, actors }));
+				}
+				if (request.method === "POST") {
+					const body = (await request.json().catch(() => ({}))) as { actors?: ActorInput[] };
+					const inputs = Array.isArray(body.actors) ? body.actors : [];
+					if (inputs.length < 1 || inputs.length > 20) {
+						return json({ ok: false, error: "Send between 1 and 20 actors." }, 400);
+					}
+					const actors = [];
+					for (const input of inputs) actors.push(await registerActor(env.DB, input));
+					return json(sanitize({ ok: true, actors }));
+				}
+			} catch (error) {
+				const failure = describeError(error);
+				return json(sanitize({ ok: false, error: failure.message, code: failure.code }), failure.code ? 500 : 400);
+			}
+		}
+
+		if (request.method === "GET" && url.pathname === "/demo/audit") {
+			const denied = checkDemoKey(request, env);
+			if (denied) return denied;
+			const since = url.searchParams.get("since") ?? new Date(Date.now() - 86_400_000).toISOString();
+			if (Number.isNaN(Date.parse(since))) {
+				return json({ ok: false, error: "since must be a time." }, 400);
+			}
+			try {
+				return json(sanitize({ ok: true, ...(await auditSince(env.DB, since)) }));
+			} catch (error) {
+				const failure = describeError(error);
+				return json(sanitize({ ok: false, error: failure.message, code: failure.code }), 500);
+			}
+		}
+
+		if (request.method === "POST" && url.pathname === "/demo/bypass") {
+			const denied = checkDemoKey(request, env);
+			if (denied) return denied;
+			try {
+				const pushed = await publishDirect(env.WORKSPACE);
+				const refName = "refs/heads/main";
+				const deadline = Date.now() + 45_000;
+				let flagged = false;
+				while (Date.now() < deadline) {
+					flagged = await isUnseen(env.DB, pushed.name, refName, pushed.edition);
+					if (flagged) break;
+					await new Promise((resolve) => setTimeout(resolve, 2000));
+				}
+				return json(sanitize({ ok: flagged, name: pushed.name, edition: pushed.edition, ref: refName, flagged }));
+			} catch (error) {
+				const failure = describeError(error);
+				return json(sanitize({ ok: false, error: failure.message, code: failure.code }), 500);
+			}
 		}
 
 		if (request.method === "POST" && url.pathname === "/demo/tracer") {
@@ -82,28 +184,50 @@ export default {
 			if (denied) return denied;
 
 			const body = (await request.json().catch(() => ({}))) as {
-				actor?: unknown;
 				n?: unknown;
+				key?: unknown;
+				personKey?: unknown;
 			};
-			const actor = typeof body.actor === "string" && body.actor ? body.actor : "agent";
 			const n = body.n === undefined ? 25 : body.n;
-			if (typeof actor !== "string" || actor.length > 24) {
-				return json({ ok: false, error: "actor must be a short string." }, 400);
-			}
+			const key = typeof body.key === "string" ? body.key : "";
+			const personKey = typeof body.personKey === "string" ? body.personKey : "";
 			if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > MAX_SESSIONS) {
 				return json(
 					{ ok: false, error: `n must be a whole number from 1 to ${MAX_SESSIONS}.` },
 					400,
 				);
 			}
+			if (!key || !personKey) {
+				return json({ ok: false, error: "An agent key and a person key are required." }, 400);
+			}
 
 			try {
+				const agent = await actorByKey(env.DB, key);
+				const person = await actorByKey(env.DB, personKey);
+				if (!agent || agent.kind !== "agent") {
+					return json({ ok: false, error: "Unknown agent key." }, 401);
+				}
+				if (!person || person.kind !== "person") {
+					return json({ ok: false, error: "Unknown person key." }, 401);
+				}
+				if (agent.ownerId !== person.id) {
+					return json({ ok: false, error: "That agent does not work for that person." }, 403);
+				}
 				const report = await runSwarm({
 					workspace: env.WORKSPACE,
 					launcher: workflowLauncher(env.SUGGESTIONS),
 					arrivals: d1ArrivalLog(env.DB),
+					audit: d1AuditLog(env.DB),
+					gateway: {
+						origin: url.origin,
+						personKey,
+						agentKey: key,
+						actorName: agent.name,
+						ownerName: person.name,
+						model: agent.model ?? agent.id,
+					},
 					n,
-					actor,
+					actor: agent.id,
 					runner: "workflow-instances",
 				});
 				return json(sanitize(report));
@@ -116,7 +240,7 @@ export default {
 		return json(
 			{
 				ok: false,
-				error: "Not found. Try GET /health, POST /demo/tracer, or POST /demo/suggestions.",
+				error: "Not found. Try GET /health, GET /who, POST /demo/tracer, or POST /demo/suggestions.",
 			},
 			404,
 		);

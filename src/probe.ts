@@ -1,14 +1,12 @@
 // Two live questions that are not part of the 25 sessions:
 // a copy made while a library push is in flight, and one push of refs/notes/*.
 
-import { NOTES_REF, publishFile, publishNotesRef } from "./git";
+import { publishFile, type Author } from "./git";
 import { describeError, type Failure } from "./redact";
-import { DEMO_AUTHOR } from "./tracer";
 import {
 	ensureSuggestion,
 	errorCode,
 	suggestionName,
-	writeAccess,
 	type WaitOptions,
 } from "./workspace";
 
@@ -40,6 +38,7 @@ export async function probeForkDuringPush(
 	library: ArtifactsRepo,
 	actor: string,
 	runId: string,
+	access: { remote: string; token: string; author: Author },
 	wait?: WaitOptions,
 ): Promise<ProbeResult> {
 	const name = suggestionName(actor, `${runId}-inflight`);
@@ -58,7 +57,6 @@ export async function probeForkDuringPush(
 	};
 
 	let forkPromise: Promise<void> | null = null;
-	const access = await writeAccess(library, 120);
 	try {
 		result.libraryPush.edition = await publishFile({
 			remote: access.remote,
@@ -66,7 +64,7 @@ export async function probeForkDuringPush(
 			path: PROBE_PATH,
 			content: PROBE_BODY,
 			message: "Save a library edition while a copy is made",
-			author: DEMO_AUTHOR,
+			author: access.author,
 			hasHistory: true,
 			beforePush: () => {
 				forkPromise = (async () => {
@@ -108,34 +106,5 @@ export async function probeForkDuringPush(
 		!Number.isNaN(forkEnd) &&
 		forkStart < pushEnd &&
 		forkEnd > pushStart;
-	return result;
-}
-
-export interface NotesResult {
-	repoName: string | null;
-	ref: string;
-	target: string | null;
-	pushed: boolean;
-	failures: Failure[];
-}
-
-/** Push one notes ref on a copy that already exists. Does not change its main line. */
-export async function pushNotesOnCopy(repo: ArtifactsRepo, repoName: string): Promise<NotesResult> {
-	const result: NotesResult = {
-		repoName,
-		ref: NOTES_REF,
-		target: null,
-		pushed: false,
-		failures: [],
-	};
-	try {
-		const access = await writeAccess(repo, 120);
-		const pushed = await publishNotesRef({ remote: access.remote, token: access.token });
-		result.ref = pushed.ref;
-		result.target = pushed.target;
-		result.pushed = true;
-	} catch (error) {
-		result.failures.push(describeError(error));
-	}
 	return result;
 }
