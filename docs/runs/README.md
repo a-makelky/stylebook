@@ -7,6 +7,7 @@ One file per live run, named `YYYY-MM-DD-<what>.md`. A run log is the evidence t
 | [2026-10-02-tracer-1.md](2026-10-02-tracer-1.md) | Library, suggestion copy, and read-back on the live service. |
 | [2026-10-02-tracer-2.md](2026-10-02-tracer-2.md) | 25 agents, then 100, suggesting at the same time on the live service. Each push was recorded when it arrived. |
 | [2026-10-02-tracer-3.md](2026-10-02-tracer-3.md) | Who saved each edition, and why, on the live service. A forged name did not change the actor. A save that skipped Stylebook was flagged. |
+| [2026-10-02-tracer-4.md](2026-10-02-tracer-4.md) | The review screen on the live service: compare, flag an overlap, publish, and keep both sides of a race. |
 
 ## What a run log contains
 

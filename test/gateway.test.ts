@@ -147,6 +147,7 @@ describe("stock git through the route", () => {
 		});
 		env = {
 			WORKSPACE: workspace.binding,
+			REVIEW: workspace.binding,
 			DEMO_KEY: "secret",
 			DB: db,
 			SUGGESTIONS: { async create() { throw new Error("not used"); } } as unknown as Workflow,

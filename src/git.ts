@@ -120,23 +120,20 @@ export async function publishSavedEdition(input: PublishInput): Promise<PublishO
 
 	let noteCommit: string | null = null;
 	if (input.note) {
-		// The note is a separate commit on refs/notes/*, so the edition itself
-		// does not change. https://developers.cloudflare.com/artifacts/concepts/best-practices/
-		noteCommit = await git.addNote({
-			fs,
-			dir,
-			oid: edition,
-			ref: NOTES_REF,
-			note: input.note.text,
-			author: input.author,
-			force: true,
-		});
+		noteCommit = await writeNote(fs, input.remote, onAuth, edition, input.note.text, input.author);
 	}
 
 	input.beforePush?.();
 	input.mark?.("push-start");
 	await pushRef(fs, input.remote, branch, onAuth);
-	if (noteCommit) await pushRef(fs, input.remote, NOTES_REF, onAuth);
+	if (noteCommit) {
+		try {
+			await pushRef(fs, input.remote, NOTES_REF, onAuth);
+		} catch {
+			// The edition is already saved. A missing note does not undo it.
+			noteCommit = null;
+		}
+	}
 	input.mark?.("push-end");
 
 	return { edition, noteCommit };
@@ -146,4 +143,175 @@ export async function publishSavedEdition(input: PublishInput): Promise<PublishO
 export async function publishFile(input: PublishInput): Promise<string> {
 	const saved = await publishSavedEdition(input);
 	return saved.edition;
+}
+
+export interface PreparedFile {
+	path: string;
+	content: string;
+}
+
+export interface PrepareContext {
+	tip: string | null;
+	read(path: string): Promise<string | null>;
+}
+
+export type PrepareOutcome = { files: PreparedFile[]; message: string; note?: string } | { stop: string };
+
+const PUBLISH_ATTEMPTS = 3;
+
+/**
+ * A note sits on its own ref, so a shallow clone of main does not contain it.
+ * Fetch that ref first when it already exists, then add the note on top.
+ * Otherwise the send is not a fast-forward and the note is refused.
+ * https://developers.cloudflare.com/artifacts/concepts/best-practices/
+ */
+async function writeNote(
+	fs: MemoryFS,
+	remote: string,
+	onAuth: () => { username: string; password: string },
+	edition: string,
+	note: string,
+	author: Author,
+): Promise<string> {
+	// A shallow clone of main does not contain this ref. Fetch it and point
+	// the local ref at it, because the default fetch refspec only stores
+	// branches. addNote then builds on that commit instead of starting over.
+	let parent: string | null = null;
+	try {
+		const listed = await git.listServerRefs({
+			http,
+			url: remote,
+			onAuth,
+			headers: gitHeaders(),
+			protocolVersion: 1,
+			prefix: NOTES_REF,
+		});
+		parent = listed.find((item) => item.ref === NOTES_REF)?.oid ?? null;
+	} catch {
+		parent = null;
+	}
+	if (parent) {
+		await git.fetch({
+			fs,
+			http,
+			dir: "/work",
+			url: remote,
+			remoteRef: NOTES_REF,
+			singleBranch: true,
+			depth: 1,
+			onAuth,
+			headers: gitHeaders(),
+		});
+		await git.writeRef({
+			fs,
+			dir: "/work",
+			ref: NOTES_REF,
+			value: parent,
+			force: true,
+		});
+	}
+	return git.addNote({
+		fs,
+		dir: "/work",
+		oid: edition,
+		ref: NOTES_REF,
+		note,
+		author,
+		force: true,
+	});
+}
+
+function raced(reason: string): boolean {
+	return /non-fast-forward|rejected|cannot lock|failed to lock|failed to push|failed to update ref|not updated/i.test(
+		reason,
+	);
+}
+
+/**
+ * Clone the current edition, decide the files from that edition, then send.
+ * If another publish lands first, the send is refused and the whole step runs
+ * again against the new edition. A `stop` result sends nothing.
+ */
+export async function publishPrepared(input: {
+	remote: string;
+	token: string;
+	author: Author;
+	hasHistory: boolean;
+	prepare: (tree: PrepareContext) => Promise<PrepareOutcome>;
+}): Promise<{ edition: string; noteCommit: string | null } | { stopped: string }> {
+	let history = input.hasHistory;
+	for (let attempt = 1; attempt <= PUBLISH_ATTEMPTS; attempt++) {
+		const dir = "/work";
+		const fs = new MemoryFS();
+		const onAuth = auth(input.token);
+		if (history) {
+			await git.clone({
+				fs,
+				http,
+				dir,
+				url: input.remote,
+				ref: "main",
+				singleBranch: true,
+				depth: 1,
+				onAuth,
+				headers: gitHeaders(),
+			});
+		} else {
+			await git.init({ fs, dir, defaultBranch: "main" });
+		}
+		let tip: string | null = null;
+		if (history) {
+			try {
+				tip = await git.resolveRef({ fs, dir, ref: "HEAD" });
+			} catch {
+				tip = null;
+			}
+		}
+		const prepared = await input.prepare({
+			tip,
+			async read(path: string) {
+				try {
+					const data = await fs.promises.readFile(`${dir}/${path}`, "utf8");
+					return typeof data === "string" ? data : new TextDecoder().decode(data as Uint8Array);
+				} catch {
+					return null;
+				}
+			},
+		});
+		if ("stop" in prepared) return { stopped: prepared.stop };
+
+		for (const file of prepared.files) {
+			await fs.promises.writeFile(`${dir}/${file.path}`, file.content);
+			await git.add({ fs, dir, filepath: file.path });
+		}
+		const edition = await git.commit({
+			fs,
+			dir,
+			message: prepared.message,
+			author: input.author,
+		});
+		let noteCommit: string | null = null;
+		if (prepared.note) {
+			noteCommit = await writeNote(fs, input.remote, onAuth, edition, prepared.note, input.author);
+		}
+		try {
+			await pushRef(fs, input.remote, "main", onAuth);
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			if (attempt < PUBLISH_ATTEMPTS && raced(reason)) {
+				history = true;
+				continue;
+			}
+			throw error;
+		}
+		if (noteCommit) {
+			try {
+				await pushRef(fs, input.remote, NOTES_REF, onAuth);
+			} catch {
+				noteCommit = null;
+			}
+		}
+		return { edition, noteCommit };
+	}
+	return { stopped: "The library changed while this was publishing. Nothing was lost. Try again." };
 }

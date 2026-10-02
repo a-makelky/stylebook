@@ -146,6 +146,32 @@ export class FakeWorkspace {
 		return new FakeRepo(this, name) as unknown as ArtifactsRepo;
 	}
 
+	async list(opts: { limit?: number; cursor?: string } = {}) {
+		const names = [...this.repos.keys()].sort();
+		const start = opts.cursor ? Math.max(0, names.indexOf(opts.cursor) + 1) : 0;
+		const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+		const slice = names.slice(start, start + limit);
+		const more = start + slice.length < names.length;
+		return {
+			repos: slice.map((name) => {
+				const record = this.record(name);
+				return {
+					id: record.id,
+					name,
+					description: record.description,
+					defaultBranch: "main",
+					createdAt: record.createdAt,
+					updatedAt: record.createdAt,
+					lastPushAt: null,
+					source: record.source,
+					readOnly: false,
+				};
+			}),
+			total: names.length,
+			cursor: more ? slice[slice.length - 1] : undefined,
+		};
+	}
+
 	forkFrom(sourceName: string, name: string, description: string | null) {
 		this.forkCalls.push(name);
 		if (this.repos.has(name) || existsSync(this.gitDir(name))) {
@@ -234,6 +260,35 @@ class FakeRepo {
 					authoredAt: Number(at),
 					committedAt: Number(ct),
 				};
+			});
+	}
+
+	async readTree(hash: string) {
+		let output: string;
+		try {
+			output = this.workspace.git(this.name, "ls-tree", hash);
+		} catch {
+			return null;
+		}
+		return output
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => {
+				const tab = line.indexOf("\t");
+				const meta = line.slice(0, tab);
+				const name = line.slice(tab + 1);
+				const [mode, kind, id] = meta.split(" ");
+				const type =
+					kind === "tree"
+						? "tree"
+						: mode === "100755"
+							? "exec"
+							: mode === "120000"
+								? "symlink"
+								: kind === "commit"
+									? "gitlink"
+									: "blob";
+				return { name, mode: mode!, hash: id!, type };
 			});
 	}
 
