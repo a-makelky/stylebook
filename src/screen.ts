@@ -688,9 +688,9 @@ export async function handleScreen(request: Request, env: Env): Promise<Response
 			if (path === "/suggestion") return Response.json({ ok: false, error: error.message }, { status: error.status });
 			return html(renderGate(error.message), error.status);
 		}
+		const failure = describeError(error);
+		console.error(failure.code, failure.message);
 		if (path === "/suggestion") {
-			const failure = describeError(error);
-			console.error(failure.code, failure.message);
 			return Response.json({ ok: false, error: "The suggestion could not be saved." }, { status: 500 });
 		}
 		return html(renderGate("The library could not be opened. Try again."), 500);

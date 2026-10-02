@@ -1,6 +1,10 @@
 // Counts Artifacts operations per workspace. The binding is unchanged; this
 // only records what this Worker already calls.
 // https://developers.cloudflare.com/artifacts/platform/pricing/
+//
+// The binding is an RPC stub. A method taken off the stub and then invoked
+// with `.call`, `.apply`, or `.bind` asks the stub for a method of that name,
+// which it does not have. Call it as `stub[name](...)` so `this` stays the stub.
 
 import type { Env } from "./env";
 
@@ -36,30 +40,37 @@ export async function operationCounts(
 
 const READ_METHODS = new Set(["readFile", "readTree", "log", "info", "listTokens"]);
 
+type Stub = Record<string, (...args: unknown[]) => Promise<unknown>>;
+
+function callStub(target: object, name: string, args: unknown[]): Promise<unknown> {
+	return (target as Stub)[name](...args);
+}
+
 function wrapRepo(repo: ArtifactsRepo, tally: (operation: string) => void): ArtifactsRepo {
 	return new Proxy(repo, {
 		get(target, prop, receiver) {
-			const value = Reflect.get(target, prop, receiver);
-			if (typeof value !== "function") return value;
+			if (typeof prop !== "string") return Reflect.get(target, prop, receiver);
 			if (prop === "fork") {
 				return async (...args: unknown[]) => {
 					tally("fork");
-					return (value as (...inner: unknown[]) => Promise<unknown>).apply(target, args);
+					return callStub(target, prop, args);
 				};
 			}
 			if (prop === "createToken") {
 				return async (scope: string, ...args: unknown[]) => {
 					tally(scope === "write" ? "write" : "read");
-					return (value as (...inner: unknown[]) => Promise<unknown>).apply(target, [scope, ...args]);
+					return callStub(target, prop, [scope, ...args]);
 				};
 			}
-			if (READ_METHODS.has(String(prop))) {
+			if (READ_METHODS.has(prop)) {
 				return async (...args: unknown[]) => {
 					tally("read");
-					return (value as (...inner: unknown[]) => Promise<unknown>).apply(target, args);
+					return callStub(target, prop, args);
 				};
 			}
-			return (value as (...inner: unknown[]) => unknown).bind(target);
+			const value = Reflect.get(target, prop, receiver);
+			if (typeof value !== "function") return value;
+			return (...args: unknown[]) => callStub(target, prop, args);
 		},
 	});
 }
@@ -77,22 +88,23 @@ export function trackUsage(
 	const tally = (operation: string) => counts.set(operation, (counts.get(operation) ?? 0) + 1);
 	const binding = new Proxy(workspace, {
 		get(target, prop, receiver) {
-			const value = Reflect.get(target, prop, receiver);
-			if (typeof value !== "function") return value;
+			if (typeof prop !== "string") return Reflect.get(target, prop, receiver);
 			if (prop === "get") {
 				return async (name: string) => {
 					tally("get");
-					const repo = await (value as Artifacts["get"]).call(target, name);
+					const repo = (await callStub(target, prop, [name])) as ArtifactsRepo | null;
 					return repo ? wrapRepo(repo, tally) : repo;
 				};
 			}
 			if (prop === "create" || prop === "list") {
 				return async (...args: unknown[]) => {
-					tally(String(prop));
-					return (value as (...inner: unknown[]) => Promise<unknown>).apply(target, args);
+					tally(prop);
+					return callStub(target, prop, args);
 				};
 			}
-			return (value as (...inner: unknown[]) => unknown).bind(target);
+			const value = Reflect.get(target, prop, receiver);
+			if (typeof value !== "function") return value;
+			return (...args: unknown[]) => callStub(target, prop, args);
 		},
 	});
 	return {
