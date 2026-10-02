@@ -1,0 +1,48 @@
+# AGENTS.md
+
+Stylebook is a shared, versioned library for a team's AI tooling, built on Cloudflare Workers and Artifacts. Its users are writers, researchers and publishers, not developers. Read `README.md` first.
+
+## Rules
+
+1. **Cite the docs.** Every claim about what Artifacts can do needs a link to the current Cloudflare docs. If the docs and the generated `worker-configuration.d.ts` disagree, the generated types win; say so. Do not invent features. Where the docs are silent, say what you observed and how.
+2. **Evidence before "done".** A piece of work is done when it has run against live Artifacts and a run log is committed under `docs/runs/`. Code that only typechecks or only passes local tests is not done. If you are blocked, say exactly what is missing.
+3. **No secrets.** No API tokens, repo tokens, or demo keys in the repo, in run logs, in commit messages, or in responses the Worker returns.
+4. **Nothing personal.** This repo is public. No personal email addresses, account IDs, private links, or paths from anyone's machine. Artifacts remote URLs contain the account ID, so do not log or return them.
+5. **Real forks.** A suggestion copy is made with `fork()` in the same namespace as its library. Do not replace it with clone-and-push; that loses the recorded source and the fork event.
+6. **Ask before adding cost.** Nothing that bills per use beyond the Workers Paid plan without the owner's say-so.
+
+## Words
+
+On screen, and in anything a user reads, use: Workspace, Library, Suggestion, Edition, Publish, History, Copy, Locked, Combine.
+
+Never on screen: git, repo, branch, commit, push, pull, merge, fork, PR, squash, rebase, clone, token.
+
+Code, comments and this file may use the Git words. Users never see them.
+
+| On screen | Underneath |
+| --- | --- |
+| Workspace | Artifacts namespace |
+| Library | Repo named `library` |
+| Suggestion | Fork of the library, one per actor per session: `sug-<actor>-<session>` |
+| Edition | Commit on `main` |
+| Publish | Combine a suggestion into the library and push |
+
+## Layout
+
+- `src/index.ts` — routes and the demo-key check
+- `src/workspace.ts` — library and suggestion copies over the Artifacts binding
+- `src/git.ts` — writing an edition with isomorphic-git
+- `src/memory-fs.ts` — in-memory file system isomorphic-git runs on
+- `src/tracer.ts` — Tracer 1, the first end-to-end path
+- `test/` — local tests, a local Git server, and a stand-in for the binding
+- `docs/runs/` — run logs from live runs
+
+## Commands
+
+```sh
+npm install
+npm run typecheck
+npm test
+```
+
+Run both before opening a pull request. Work on a branch and open a pull request; do not push to `main`.
