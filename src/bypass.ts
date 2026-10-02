@@ -4,12 +4,14 @@
 
 import { publishFile } from "./git";
 import { DEMO_AUTHOR } from "./tracer";
-import { ensureLibrary, listEditions, writeAccess, LIBRARY } from "./workspace";
+import { ensureLibrary, libraryName, listEditions, writeAccess } from "./workspace";
 
 export async function publishDirect(
 	workspace: Artifacts,
+	workspaceId = "desk",
 ): Promise<{ name: string; edition: string }> {
-	const library = await ensureLibrary(workspace);
+	const name = libraryName(workspaceId);
+	const library = await ensureLibrary(workspace, workspaceId);
 	const existing = await listEditions(library.repo, 1);
 	const access = await writeAccess(library.repo, 120);
 	const edition = await publishFile({
@@ -21,5 +23,5 @@ export async function publishDirect(
 		author: DEMO_AUTHOR,
 		hasHistory: existing.length > 0,
 	});
-	return { name: LIBRARY, edition };
+	return { name, edition };
 }

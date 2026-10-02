@@ -1,11 +1,33 @@
-// A workspace is one Artifacts namespace. It holds the team's library and one
-// suggestion copy per actor per session. Copies are made with fork(), which
-// keeps them in the source namespace and records where they came from.
+// One Artifacts binding addresses one namespace, chosen in wrangler config.
+// The binding methods take a repo name, not a namespace, so a team is a prefix
+// on every repo in that namespace. Copies are made with fork(), which keeps
+// them in the source namespace and records where they came from.
 // https://developers.cloudflare.com/artifacts/api/workers-binding/
+// https://developers.cloudflare.com/artifacts/concepts/namespaces/
 // https://developers.cloudflare.com/artifacts/concepts/best-practices/
+// https://developers.cloudflare.com/artifacts/platform/limits/
 
-export const LIBRARY = "library";
 export const DEFAULT_BRANCH = "main";
+
+/** Namespace and repo names are 2–63 characters. Copies stay inside that. */
+export const REPO_NAME_LIMIT = 63;
+
+const WORKSPACE_ID = /^[a-z][a-z0-9]{2,15}$/;
+
+export function libraryName(workspaceId: string): string {
+	if (!WORKSPACE_ID.test(workspaceId)) throw new Error("Workspace id must be a short lowercase name.");
+	return `${workspaceId}-library`;
+}
+
+export function isLibraryName(repoName: string): boolean {
+	return /^[a-z][a-z0-9]{2,15}-library$/.test(repoName);
+}
+
+/** True when the repo is this team's library or one of its suggestion copies. */
+export function repoInWorkspace(workspaceId: string, repoName: string): boolean {
+	if (!WORKSPACE_ID.test(workspaceId)) return false;
+	return repoName === libraryName(workspaceId) || repoName.startsWith(`${workspaceId}-sug-`);
+}
 
 /** Error codes that mean "this repo exists but is not ready yet". */
 const NOT_READY = new Set([
@@ -35,24 +57,32 @@ function slug(value: string): string {
  * recommends (stable identifiers, one repo per unit of work). Repo names may
  * use letters, digits, `.`, `_` and `-`, and must start with a letter or digit.
  */
-export function suggestionName(actor: string, session: string): string {
-	return `sug-${slug(actor)}-${slug(session)}`.slice(0, 63);
-}
-
-/** Prefix of every copy that belongs to one actor. The trailing hyphen keeps `sug-a-` from matching `sug-agent-`. */
-export function copyPrefix(actorId: string): string {
-	return `sug-${slug(actorId)}-`;
+/**
+ * Name for one actor's one session. The workspace id is a prefix so two teams
+ * never share a repo. The whole name stays within the repo name limit.
+ */
+export function suggestionName(workspaceId: string, actor: string, session: string): string {
+	if (!WORKSPACE_ID.test(workspaceId)) throw new Error("Workspace id must be a short lowercase name.");
+	const prefix = `${workspaceId}-sug-`;
+	const actorSlug = slug(actor);
+	const sessionSlug = slug(session);
+	const room = REPO_NAME_LIMIT - prefix.length - 1;
+	const actorPart = actorSlug.slice(0, Math.max(1, Math.min(actorSlug.length, room - 1)));
+	const sessionPart = sessionSlug.slice(0, Math.max(1, room - actorPart.length));
+	return `${prefix}${actorPart}-${sessionPart}`.slice(0, REPO_NAME_LIMIT);
 }
 
 /**
- * Actor ids have no hyphens, so the actor is exactly the segment between
- * `sug-` and the next hyphen. A prefix test alone would let actor "a" open
- * copies of an actor whose id starts with "a-".
+ * Actor ids have no hyphens, so the actor is the segment right after
+ * `{workspace}-sug-`. Actor "a" owns `desk-sug-a-b-run`, whose session is
+ * `b-run`. Actor "ab" does not.
  */
-export function ownsCopy(actorId: string, repoName: string): boolean {
+export function ownsCopy(workspaceId: string, actorId: string, repoName: string): boolean {
 	if (!/^[a-z0-9]+$/.test(actorId)) return false;
-	if (!repoName.startsWith(copyPrefix(actorId))) return false;
-	return repoName.split("-")[1] === actorId;
+	if (!repoInWorkspace(workspaceId, repoName)) return false;
+	const prefix = `${workspaceId}-sug-`;
+	if (!repoName.startsWith(`${prefix}${actorId}-`)) return false;
+	return repoName.slice(prefix.length).split("-")[0] === actorId;
 }
 
 export interface WaitOptions {
@@ -115,17 +145,19 @@ export interface Library {
 	created: boolean;
 }
 
-/** Get the workspace's library, creating it on first use. */
+/** Get one team's library, creating it on first use. */
 export async function ensureLibrary(
 	workspace: Artifacts,
+	workspaceId: string,
 	wait?: WaitOptions,
 ): Promise<Library> {
-	const existing = await getRepo(workspace, LIBRARY, wait);
+	const name = libraryName(workspaceId);
+	const existing = await getRepo(workspace, name, wait);
 	if (existing) return { repo: existing, created: false };
 
 	let created = true;
 	try {
-		await workspace.create(LIBRARY, {
+		await workspace.create(name, {
 			description: "Team library: skills, MCP definitions and workflows",
 			setDefaultBranch: DEFAULT_BRANCH,
 		});
@@ -135,7 +167,7 @@ export async function ensureLibrary(
 		created = false;
 	}
 
-	const repo = await getRepo(workspace, LIBRARY, wait);
+	const repo = await getRepo(workspace, name, wait);
 	if (!repo) throw new Error("The library could not be created");
 	return { repo, created };
 }

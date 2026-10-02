@@ -74,8 +74,8 @@ export async function recordPush(
 	await db
 		.prepare(
 			`INSERT OR IGNORE INTO gateway_pushes
-        (repo_name, ref_name, edition_id, actor_id, actor_name, actor_kind, owner_id, owner_name, model, accepted_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
+        (repo_name, ref_name, edition_id, actor_id, actor_name, actor_kind, owner_id, owner_name, model, accepted_at, workspace_id)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
 		)
 		.bind(
 			input.repoName,
@@ -88,6 +88,7 @@ export async function recordPush(
 			input.owner.name,
 			input.actor.model,
 			input.acceptedAt,
+			input.actor.workspaceId,
 		)
 		.run();
 }
@@ -182,11 +183,17 @@ export interface RecentCopy {
  * Newest suggestion copies the Git route has accepted, one row per copy.
  * `before` is the last row already shown, as `acceptedAt|id`.
  */
-export async function recentCopies(db: D1Database, before: string | null, limit: number): Promise<RecentCopy[]> {
+export async function recentCopies(
+	db: D1Database,
+	workspaceId: string,
+	before: string | null,
+	limit: number,
+): Promise<RecentCopy[]> {
 	const split = before?.split("|") ?? [];
 	const beforeAt = split[0] || null;
 	const beforeId = Number(split[1] ?? "0");
 	const hasCursor = Boolean(beforeAt) && Number.isFinite(beforeId);
+	const like = `${workspaceId}-sug-%`;
 	const statement = hasCursor
 		? db
 				.prepare(
@@ -195,14 +202,14 @@ export async function recentCopies(db: D1Database, before: string | null, limit:
            INNER JOIN (
              SELECT repo_name, MAX(id) AS id
              FROM gateway_pushes
-             WHERE ref_name = 'refs/heads/main' AND repo_name LIKE 'sug-%'
+             WHERE ref_name = 'refs/heads/main' AND workspace_id = ?1 AND repo_name LIKE ?2
              GROUP BY repo_name
            ) latest ON latest.id = g.id
-           WHERE g.accepted_at < ?1 OR (g.accepted_at = ?2 AND g.id < ?3)
+           WHERE g.accepted_at < ?3 OR (g.accepted_at = ?4 AND g.id < ?5)
            ORDER BY g.accepted_at DESC, g.id DESC
-           LIMIT ?4`,
+           LIMIT ?6`,
 				)
-				.bind(beforeAt, beforeAt, beforeId, limit)
+				.bind(workspaceId, like, beforeAt, beforeAt, beforeId, limit)
 		: db
 				.prepare(
 					`SELECT g.id, g.repo_name, g.edition_id, g.accepted_at, g.actor_id, g.actor_name, g.owner_name
@@ -210,13 +217,13 @@ export async function recentCopies(db: D1Database, before: string | null, limit:
            INNER JOIN (
              SELECT repo_name, MAX(id) AS id
              FROM gateway_pushes
-             WHERE ref_name = 'refs/heads/main' AND repo_name LIKE 'sug-%'
+             WHERE ref_name = 'refs/heads/main' AND workspace_id = ?1 AND repo_name LIKE ?2
              GROUP BY repo_name
            ) latest ON latest.id = g.id
            ORDER BY g.accepted_at DESC, g.id DESC
-           LIMIT ?1`,
+           LIMIT ?3`,
 				)
-				.bind(limit);
+				.bind(workspaceId, like, limit);
 	const rows = await statement.all<{
 		id: number;
 		repo_name: string;

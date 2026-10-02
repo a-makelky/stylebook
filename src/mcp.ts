@@ -6,6 +6,7 @@ import { actorFromRequest } from "./auth";
 import type { Env } from "./env";
 import { DeskError, loadDesk, saveAgentSuggestion } from "./review";
 import { describeError } from "./redact";
+import { scopedEnv } from "./usage";
 import { ensureLibrary, listPaths, readBytes } from "./workspace";
 
 const PROTOCOL = "2025-03-26";
@@ -76,15 +77,15 @@ function argsOf(params: unknown): Record<string, unknown> {
 	return {};
 }
 
-async function listLibrary(env: Env): Promise<string> {
-	const library = await ensureLibrary(env.WORKSPACE);
+async function listLibrary(env: Env, workspaceId: string): Promise<string> {
+	const library = await ensureLibrary(env.WORKSPACE, workspaceId);
 	const paths = await listPaths(library.repo);
 	if (paths.length === 0) return "The library is empty.";
 	return paths.map((path) => `- ${path}`).join("\n");
 }
 
-async function readItem(env: Env, path: string): Promise<string> {
-	const library = await ensureLibrary(env.WORKSPACE);
+async function readItem(env: Env, workspaceId: string, path: string): Promise<string> {
+	const library = await ensureLibrary(env.WORKSPACE, workspaceId);
 	const bytes = await readBytes(library.repo, path);
 	if (!bytes) return `That page is not in the library: ${path}`;
 	return new TextDecoder().decode(bytes);
@@ -99,12 +100,14 @@ async function callTool(
 ): Promise<{ text: string; isError: boolean }> {
 	const signed = await actorFromRequest(request, env);
 	if (!signed) return { text: "Missing or unknown key.", isError: true };
+	const scoped = scopedEnv(env, signed.actor.workspaceId);
+	env = scoped.env;
 	try {
-		if (name === "list_library") return { text: await listLibrary(env), isError: false };
+		if (name === "list_library") return { text: await listLibrary(env, signed.actor.workspaceId), isError: false };
 		if (name === "read_item") {
 			const path = typeof args.path === "string" ? args.path : "";
 			if (!path) return { text: "A path is required.", isError: true };
-			const text = await readItem(env, path);
+			const text = await readItem(env, signed.actor.workspaceId, path);
 			return { text, isError: text.startsWith("That page is not") };
 		}
 		if (name === "suggest_change") {
@@ -134,6 +137,8 @@ async function callTool(
 		const failure = describeError(error);
 		console.error(failure.code, failure.message);
 		return { text: "The library could not be opened.", isError: true };
+	} finally {
+		await scoped.flush();
 	}
 }
 

@@ -6,11 +6,16 @@ import { registerActor, type Actor } from "./actors";
 import type { Env } from "./env";
 import { ensureSampleLibrary, saveAgentSuggestion } from "./review";
 import { SAMPLE_FILES } from "./sample-files";
-import { ensureLibrary, getRepo, readBytes, suggestionName } from "./workspace";
+import { workspaceById } from "./teams";
+import { ensureLibrary, getRepo, libraryName, readBytes, suggestionName } from "./workspace";
 
-const PERSON_ID = "editor";
-const RESEARCHER_ID = "researcher";
-const PROOFREADER_ID = "proofreader";
+const PERSON_ROLE = "editor";
+const RESEARCHER_ROLE = "researcher";
+const PROOFREADER_ROLE = "proofreader";
+
+function roleId(workspaceId: string, role: string): string {
+	return `${workspaceId.replace(/[^a-z0-9]/g, "").slice(0, 8)}${role}`.slice(0, 24);
+}
 
 interface SeedEdit {
 	agentId: string;
@@ -37,7 +42,7 @@ const STEP = "1. Read the whole transcript before writing anything.";
 /** Eleven open suggestions. The last two share a line of Steps. */
 export const SEED_EDITS: SeedEdit[] = [
 	{
-		agentId: RESEARCHER_ID,
+		agentId: RESEARCHER_ROLE,
 		session: "names",
 		path: INTERVIEW,
 		why: "Keep every name tied to the transcript.",
@@ -45,14 +50,14 @@ export const SEED_EDITS: SeedEdit[] = [
 			replaceOnce(text, "## Never\n", "## Never\n\n- Do not guess a name the transcript does not spell.\n"),
 	},
 	{
-		agentId: PROOFREADER_ID,
+		agentId: PROOFREADER_ROLE,
 		session: "style",
 		path: INTERVIEW,
 		why: "Ask for the house style before the draft.",
 		apply: (text) => replaceOnce(text, "- the target length\n", "- the target length\n- the house style for titles\n"),
 	},
 	{
-		agentId: RESEARCHER_ID,
+		agentId: RESEARCHER_ROLE,
 		session: "sources",
 		path: RESEARCH,
 		why: "Name the source in the sentence that uses it.",
@@ -64,7 +69,7 @@ export const SEED_EDITS: SeedEdit[] = [
 			),
 	},
 	{
-		agentId: PROOFREADER_ID,
+		agentId: PROOFREADER_ROLE,
 		session: "dates",
 		path: RESEARCH,
 		why: "A page without a date is not a source yet.",
@@ -72,7 +77,7 @@ export const SEED_EDITS: SeedEdit[] = [
 			replaceOnce(text, "## Never\n", "## Never\n\n- Cite a page without the date it was published.\n"),
 	},
 	{
-		agentId: RESEARCHER_ID,
+		agentId: RESEARCHER_ROLE,
 		session: "pauses",
 		path: TRANSCRIPT,
 		why: "Keep a pause when it changes the answer.",
@@ -84,7 +89,7 @@ export const SEED_EDITS: SeedEdit[] = [
 			),
 	},
 	{
-		agentId: PROOFREADER_ID,
+		agentId: PROOFREADER_ROLE,
 		session: "unclear",
 		path: TRANSCRIPT,
 		why: "An unclear speaker needs a timestamp, not a guess.",
@@ -96,7 +101,7 @@ export const SEED_EDITS: SeedEdit[] = [
 			),
 	},
 	{
-		agentId: RESEARCHER_ID,
+		agentId: RESEARCHER_ROLE,
 		session: "handoff",
 		path: FEATURE,
 		why: "Name the assigning editor in the handoff note.",
@@ -108,7 +113,7 @@ export const SEED_EDITS: SeedEdit[] = [
 			),
 	},
 	{
-		agentId: PROOFREADER_ID,
+		agentId: PROOFREADER_ROLE,
 		session: "ask",
 		path: PITCH,
 		why: "The ask should be a sentence the client can repeat.",
@@ -120,7 +125,7 @@ export const SEED_EDITS: SeedEdit[] = [
 			),
 	},
 	{
-		agentId: RESEARCHER_ID,
+		agentId: RESEARCHER_ROLE,
 		session: "clauses",
 		path: CONTRACT,
 		why: "Quote the clause that is one-sided.",
@@ -132,14 +137,14 @@ export const SEED_EDITS: SeedEdit[] = [
 			),
 	},
 	{
-		agentId: PROOFREADER_ID,
+		agentId: PROOFREADER_ROLE,
 		session: "twice",
 		path: INTERVIEW,
 		why: "A second read catches a missed quote.",
 		apply: (text) => replaceOnce(text, STEP, "1. Read the whole transcript twice before writing anything."),
 	},
 	{
-		agentId: RESEARCHER_ID,
+		agentId: RESEARCHER_ROLE,
 		session: "brief",
 		path: INTERVIEW,
 		why: "Start from the agreed brief.",
@@ -156,37 +161,51 @@ export interface SeedReport {
 export async function seedOpenSuggestions(
 	env: Env,
 	origin: string,
-	input: { personKey: string; researcherKey: string; proofreaderKey: string },
+	input: { personKey: string; researcherKey: string; proofreaderKey: string; workspaceName?: string; workspaceId?: string },
 ): Promise<SeedReport> {
+	const wantedName = input.workspaceName?.trim() || "Demo";
+	const wantedId = input.workspaceId?.trim() || "demo";
+	let workspace = await workspaceById(env.DB, wantedId);
+	if (!workspace) {
+		if (!/^[a-z][a-z0-9]{2,15}$/.test(wantedId)) throw new Error("Workspace id must be a short lowercase name.");
+		await env.DB.prepare(`INSERT INTO workspaces (id, name, created_at) VALUES (?1, ?2, ?3)`)
+			.bind(wantedId, wantedName, new Date().toISOString())
+			.run();
+		workspace = { id: wantedId, name: wantedName };
+	}
 	const person = await registerActor(env.DB, {
-		id: PERSON_ID,
+		id: roleId(workspace.id, PERSON_ROLE),
 		kind: "person",
 		name: "Editor",
+		workspaceId: workspace.id,
+		email: "editor@stylebook.invalid",
 		key: input.personKey,
 	});
 	const researcher = await registerActor(env.DB, {
-		id: RESEARCHER_ID,
+		id: roleId(workspace.id, RESEARCHER_ROLE),
 		kind: "agent",
 		name: "Researcher",
+		workspaceId: workspace.id,
 		ownerId: person.id,
 		model: "researcher",
 		key: input.researcherKey,
 	});
 	const proofreader = await registerActor(env.DB, {
-		id: PROOFREADER_ID,
+		id: roleId(workspace.id, PROOFREADER_ROLE),
 		kind: "agent",
 		name: "Proofreader",
+		workspaceId: workspace.id,
 		ownerId: person.id,
 		model: "proofreader",
 		key: input.proofreaderKey,
 	});
 	const agents = new Map<string, { actor: Actor; key: string }>([
-		[researcher.id, { actor: researcher, key: input.researcherKey }],
-		[proofreader.id, { actor: proofreader, key: input.proofreaderKey }],
+		[RESEARCHER_ROLE, { actor: researcher, key: input.researcherKey }],
+		[PROOFREADER_ROLE, { actor: proofreader, key: input.proofreaderKey }],
 	]);
 
 	await ensureSampleLibrary(env, person, input.personKey, origin);
-	const library = await ensureLibrary(env.WORKSPACE);
+	const library = await ensureLibrary(env.WORKSPACE, workspace.id);
 
 	const created: SeedReport["created"] = [];
 	const alreadyThere: string[] = [];
@@ -198,7 +217,7 @@ export async function seedOpenSuggestions(
 		if (content === source) continue;
 		const holder = agents.get(edit.agentId);
 		if (!holder) continue;
-		const name = suggestionName(holder.actor.id, edit.session);
+		const name = suggestionName(workspace.id, holder.actor.id, edit.session);
 		if (await getRepo(env.WORKSPACE, name)) {
 			alreadyThere.push(name);
 			continue;

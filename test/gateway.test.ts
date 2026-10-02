@@ -13,7 +13,7 @@ import { publishDirect } from "../src/bypass";
 import { publishFile } from "../src/git";
 import { editionNote, parseEditionNote } from "../src/notes";
 import { STARTER_SKILL, STARTER_SKILL_PATH } from "../src/seed";
-import { ensureLibrary, ensureSuggestion, suggestionName, LIBRARY } from "../src/workspace";
+import { ensureLibrary, ensureSuggestion, libraryName, suggestionName } from "../src/workspace";
 import { ArrivalWorkflow } from "../src/workflows";
 import type { WorkflowStep } from "cloudflare:workers";
 import { FakeWorkspace } from "./fake-artifacts";
@@ -28,10 +28,39 @@ const CURSOR_KEY = "test-cursor-key-0001";
 const CODEX_KEY = "test-codex-key-0001";
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const ZERO = "0".repeat(40);
+const WS = "desk";
+const LIBRARY = libraryName(WS);
 
-const editor: Actor = { id: "editor", kind: "person", name: "Aaron", ownerId: null, model: null };
-const cursor: Actor = { id: "cursor", kind: "agent", name: "Cursor", ownerId: "editor", model: "cursor" };
-const codex: Actor = { id: "codex", kind: "agent", name: "Codex", ownerId: "editor", model: "codex" };
+const editor: Actor = {
+	id: "editor",
+	kind: "person",
+	name: "Aaron",
+	ownerId: null,
+	model: null,
+	workspaceId: WS,
+	email: null,
+	removedAt: null,
+};
+const cursor: Actor = {
+	id: "cursor",
+	kind: "agent",
+	name: "Cursor",
+	ownerId: "editor",
+	model: "cursor",
+	workspaceId: WS,
+	email: null,
+	removedAt: null,
+};
+const codex: Actor = {
+	id: "codex",
+	kind: "agent",
+	name: "Codex",
+	ownerId: "editor",
+	model: "codex",
+	workspaceId: WS,
+	email: null,
+	removedAt: null,
+};
 
 function pkt(line: string): Uint8Array {
 	const data = new TextEncoder().encode(line);
@@ -64,24 +93,51 @@ describe("who may use a copy", () => {
 	it("lets an agent read the library and write only its own copies", () => {
 		expect(allows(cursor, LIBRARY, false)).toBe(true);
 		expect(allows(cursor, LIBRARY, true)).toBe(false);
-		expect(allows(cursor, suggestionName("cursor", "one"), true)).toBe(true);
-		expect(allows(cursor, suggestionName("codex", "one"), false)).toBe(false);
-		expect(allows(cursor, suggestionName("codex", "one"), true)).toBe(false);
+		expect(allows(cursor, suggestionName(WS, "cursor", "one"), true)).toBe(true);
+		expect(allows(cursor, suggestionName(WS, "codex", "one"), false)).toBe(false);
+		expect(allows(cursor, suggestionName(WS, "codex", "one"), true)).toBe(false);
 		expect(allows(editor, LIBRARY, true)).toBe(true);
-		expect(allows(editor, suggestionName("cursor", "one"), false)).toBe(true);
-		expect(allows(editor, suggestionName("cursor", "one"), true)).toBe(false);
+		expect(allows(editor, suggestionName(WS, "cursor", "one"), false)).toBe(true);
+		expect(allows(editor, suggestionName(WS, "cursor", "one"), true)).toBe(false);
+		expect(allows(cursor, libraryName("other"), false)).toBe(false);
 	});
 
 	it("does not let one actor id open copies whose actor id merely starts with it", async () => {
-		const agentA: Actor = { id: "a", kind: "agent", name: "A", ownerId: "editor", model: "m" };
-		expect(allows(agentA, "sug-a-run-001", true)).toBe(true);
-		expect(allows(agentA, "sug-a-b-run-001", true)).toBe(true);
-		const agentAB: Actor = { id: "a-b", kind: "agent", name: "AB", ownerId: "editor", model: "m" };
-		expect(allows(agentAB, "sug-a-b-run-001", true)).toBe(false);
+		const agentA: Actor = {
+			id: "a",
+			kind: "agent",
+			name: "A",
+			ownerId: "editor",
+			model: "m",
+			workspaceId: WS,
+			email: null,
+			removedAt: null,
+		};
+		expect(allows(agentA, "desk-sug-a-run-001", true)).toBe(true);
+		expect(allows(agentA, "desk-sug-a-b-run-001", true)).toBe(true);
+		const agentAB: Actor = {
+			id: "ab",
+			kind: "agent",
+			name: "AB",
+			ownerId: "editor",
+			model: "m",
+			workspaceId: WS,
+			email: null,
+			removedAt: null,
+		};
+		expect(allows(agentAB, "desk-sug-a-b-run-001", true)).toBe(false);
 		const db = memoryD1();
-		await registerActor(db, { id: "editor", kind: "person", name: "Editor", key: PERSON_KEY });
+		await registerActor(db, { id: "editor", kind: "person", name: "Editor", workspaceId: WS, key: PERSON_KEY });
 		await expect(
-			registerActor(db, { id: "a-b", kind: "agent", name: "AB", ownerId: "editor", model: "m", key: CURSOR_KEY }),
+			registerActor(db, {
+				id: "a-b",
+				kind: "agent",
+				name: "AB",
+				ownerId: "editor",
+				model: "m",
+				workspaceId: WS,
+				key: CURSOR_KEY,
+			}),
 		).rejects.toThrow(/letters and digits/);
 	});
 
@@ -128,13 +184,14 @@ describe("stock git through the route", () => {
 	beforeAll(async () => {
 		workspace = await FakeWorkspace.start();
 		db = memoryD1();
-		await registerActor(db, { id: "editor", kind: "person", name: "Aaron", key: PERSON_KEY });
+		await registerActor(db, { id: "editor", kind: "person", name: "Aaron", workspaceId: WS, key: PERSON_KEY });
 		await registerActor(db, {
 			id: "cursor",
 			kind: "agent",
 			name: "Cursor",
 			ownerId: "editor",
 			model: "cursor",
+			workspaceId: WS,
 			key: CURSOR_KEY,
 		});
 		await registerActor(db, {
@@ -143,6 +200,7 @@ describe("stock git through the route", () => {
 			name: "Codex",
 			ownerId: "editor",
 			model: "codex",
+			workspaceId: WS,
 			key: CODEX_KEY,
 		});
 		env = {
@@ -172,7 +230,7 @@ describe("stock git through the route", () => {
 	}
 
 	it("clones and pushes with stock git, and a forged author stays the agent", async () => {
-		const library = await ensureLibrary(workspace.binding);
+		const library = await ensureLibrary(workspace.binding, WS);
 		await publishFile({
 			remote: remote(LIBRARY, PERSON_KEY),
 			token: PERSON_KEY,
@@ -182,7 +240,7 @@ describe("stock git through the route", () => {
 			author: { name: "Aaron", email: "editor@stylebook.invalid" },
 			hasHistory: false,
 		});
-		const name = suggestionName("cursor", "stock");
+		const name = suggestionName(WS, "cursor", "stock");
 		await ensureSuggestion(workspace.binding, library.repo, name);
 
 		const dir = mkdtempSync(join(tmpdir(), "stylebook-clone-"));
@@ -364,11 +422,11 @@ describe("stock git through the route", () => {
 		});
 		const suggestedBody = (await suggested.json()) as { result: { content: { text: string }[]; isError: boolean } };
 		expect(suggestedBody.result.isError, suggestedBody.result.content[0]?.text).toBe(false);
-		expect(suggestedBody.result.content[0]?.text).toContain("sug-cursor-mcp1");
+		expect(suggestedBody.result.content[0]?.text).toContain("desk-sug-cursor-mcp1");
 
 		const open = await call("tools/call", { name: "list_suggestions", arguments: { path: STARTER_SKILL_PATH } });
 		const openBody = (await open.json()) as { result: { content: { text: string }[] } };
-		expect(openBody.result.content[0]?.text).toContain("sug-cursor-mcp1");
+		expect(openBody.result.content[0]?.text).toContain("desk-sug-cursor-mcp1");
 		expect(openBody.result.content[0]?.text).toContain("Add a closing line.");
 	}, 30_000);
 });

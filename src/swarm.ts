@@ -27,7 +27,7 @@ import { probeForkDuringPush, type ProbeResult } from "./probe";
 import { describeError, redact, type Failure } from "./redact";
 import { STARTER_SKILL, STARTER_SKILL_PATH } from "./seed";
 import { runSuggestionSession, type SessionGateway, type SessionParams, type SessionResult } from "./session";
-import { ensureLibrary, suggestionName, LIBRARY } from "./workspace";
+import { ensureLibrary, libraryName, suggestionName } from "./workspace";
 
 export const MAX_SESSIONS = 100;
 const MAIN_REF = "refs/heads/main";
@@ -83,6 +83,7 @@ export interface SwarmOptions {
 	gateway: SwarmGateway;
 	n: number;
 	actor: string;
+	workspaceId: string;
 	runId?: string;
 	/** How the sessions are actually started. The route uses Workflow instances. */
 	runner?: SwarmReport["runner"];
@@ -206,7 +207,7 @@ function failedSession(params: SessionParams, failures: Failure[]): SessionResul
 	};
 	return {
 		ok: false,
-		name: suggestionName(params.actor, params.session),
+		name: suggestionName(params.workspaceId, params.actor, params.session),
 		actor: params.actor,
 		session: params.session,
 		edit,
@@ -324,11 +325,12 @@ export async function runSwarm(options: SwarmOptions): Promise<SwarmReport> {
 	const failures: Failure[] = [];
 	const arrivalWaitMs = options.arrivalWaitMs ?? 90_000;
 
-	const library = await ensureLibrary(options.workspace);
+	const libraryRepo = libraryName(options.workspaceId);
+	const library = await ensureLibrary(options.workspace, options.workspaceId);
 	const before = await listEditionsOf(library.repo);
 	const personAuthor: Author = { name: options.gateway.ownerName, email: "editor@stylebook.invalid" };
 	const libraryAccess = {
-		remote: gatewayRemote(options.gateway.origin, LIBRARY),
+		remote: gatewayRemote(options.gateway.origin, libraryRepo),
 		token: options.gateway.personKey,
 		author: personAuthor,
 	};
@@ -348,6 +350,7 @@ export async function runSwarm(options: SwarmOptions): Promise<SwarmReport> {
 	const probe = await probeForkDuringPush(
 		options.workspace,
 		library.repo,
+		options.workspaceId,
 		options.actor,
 		runId,
 		libraryAccess,
@@ -365,6 +368,7 @@ export async function runSwarm(options: SwarmOptions): Promise<SwarmReport> {
 	};
 	const params: SessionParams[] = Array.from({ length: options.n }, (_, index) => ({
 		actor: options.actor,
+		workspaceId: options.workspaceId,
 		session: `${runId}-${String(index + 1).padStart(3, "0")}`,
 		editIndex: index,
 		runId,
@@ -388,7 +392,7 @@ export async function runSwarm(options: SwarmOptions): Promise<SwarmReport> {
 	const expected: ExpectedPush[] = [];
 	if (seededEdition) {
 		expected.push({
-			repoName: LIBRARY,
+			repoName: libraryRepo,
 			refName: MAIN_REF,
 			editionId: seededEdition,
 			kind: "library",
@@ -396,7 +400,7 @@ export async function runSwarm(options: SwarmOptions): Promise<SwarmReport> {
 	}
 	if (probe.libraryPush.edition) {
 		expected.push({
-			repoName: LIBRARY,
+			repoName: libraryRepo,
 			refName: MAIN_REF,
 			editionId: probe.libraryPush.edition,
 			kind: "library",

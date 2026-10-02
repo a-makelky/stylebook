@@ -24,12 +24,27 @@ This table is the honest state of the code, not a roadmap.
 | Who made each change and why | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-3.md). |
 | Review screen: compare, flag overlaps, publish | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-4.md). |
 | Pull the library with plain Git or over MCP | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-5.md). |
+| Workspaces, email sign-in, invites, and connecting an agent | See the latest run log in [`docs/runs/`](docs/runs/). |
 
 Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for a piece, treat that piece as unproven.
 
-## Run it
+## Use it
 
-You need Node.js 22, Git, and a Cloudflare account on the Workers Paid plan. Artifacts requires that plan. See [Get started](https://developers.cloudflare.com/artifacts/get-started/).
+Stylebook is hosted at [stylebook.dev](https://stylebook.dev). A writer opens that address in a browser. They do not need Cloudflare or a terminal.
+
+1. Start a workspace with a name and an email address. The email contains a link. It works once and expires in 15 minutes. Opening it lands on the library, which already holds the sample pages.
+2. From People and agents, invite a colleague by email. Their link signs them into that same workspace. Everyone in the workspace can review and publish. Remove ends that person's sessions.
+3. Connect an agent by giving it a name and picking the tool. The key is shown once, with a setup for Cursor or Claude Code and a setup for a folder on your computer. The agent's first suggestion then appears on the page. An agent can be renamed, and its key can be revoked.
+
+A workspace is one team. Its library, suggestions, people, agents and History stay inside it. Another workspace cannot see or change them.
+
+When a limit is reached, the page says so in plain language. The starting limits are 40 workspaces, 25 people and 40 agents in one workspace, 200 open suggestions in one workspace, and 5 sign-in emails per address per hour.
+
+## Run it yourself
+
+Self-hosting is possible from this project. It is not the path above.
+
+You need Node.js 22, Git, and a Cloudflare account on the Workers Paid plan. Artifacts requires that plan. See [Get started](https://developers.cloudflare.com/artifacts/get-started/). Sending sign-in email also needs [Email Service](https://developers.cloudflare.com/email-service/get-started/send-emails/) on that plan, with the sender `sign-in@stylebook.dev` allowed on the binding. See [Send bindings](https://developers.cloudflare.com/email-service/configuration/send-bindings/).
 
 From a fresh clone of this project:
 
@@ -56,7 +71,7 @@ When that id differs from `database_id` under `[[d1_databases]]` in `wrangler.to
 npx wrangler d1 migrations apply stylebook --remote
 ```
 
-The workspace name in `wrangler.toml` is `stylebook-review`. One workspace holds the library and every suggestion copy, because a copy made with `fork()` stays in the namespace it was made from. If that namespace does not exist yet, Artifacts creates it when the first copy is created. See [Namespaces](https://developers.cloudflare.com/artifacts/concepts/namespaces/).
+The Workers binding addresses one namespace, chosen in `wrangler.toml`. Its methods take a repo name, not a namespace, so a team is a prefix on every repo (`{id}-library` and `{id}-sug-…`) in the namespace `stylebook`. A copy made with `fork()` stays in that namespace. If the namespace does not exist yet, Artifacts creates it when the first repo is created. See the [Workers binding](https://developers.cloudflare.com/artifacts/api/workers-binding/) and [Namespaces](https://developers.cloudflare.com/artifacts/concepts/namespaces/). Older namespaces named `stylebook-review` and `stylebook-demo` stay in the account and are not bound.
 
 `wrangler.toml` attaches `stylebook.dev` as a [custom domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/). Delete the `[[routes]]` block before you deploy if that domain is not in your Cloudflare account. The deploy fails when the domain belongs to another account.
 
@@ -85,7 +100,7 @@ curl -X POST "$HOST/demo/seed" \
   -d "{\"personKey\":\"$PERSON_KEY\",\"researcherKey\":\"$RESEARCHER_KEY\",\"proofreaderKey\":\"$PROOFREADER_KEY\"}"
 ```
 
-Keep the three keys. The seed request can take about a minute. Open `$HOST` in a browser and sign in with `$PERSON_KEY`. The first page lists the newest suggestions. When more copies exist than fit on the page, it links to the older ones and does not read every copy.
+Keep the three keys. The seed request can take about a minute. It opens a workspace named Demo. The library repo is `demo-library`. Open `$HOST` in a browser and sign in with the Editor address the seed records (`editor@stylebook.invalid`). The first page lists the newest suggestions. When more copies exist than fit on the page, it links to the older ones and does not read every copy.
 
 The `workers.dev` hostname returns [error 1010](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/) for Python's default user agent. That refusal happens before the request reaches the Worker. `curl` and Git get through on that hostname. On `stylebook.dev` the same Python agent gets through. If a hostname you control returns 1010, [Browser Integrity Check](https://developers.cloudflare.com/waf/tools/browser-integrity-check/) is refusing the client. The commands below send `-A stylebook-live-run` so they do not depend on that check. Git sends its own user agent. The run log records what got through.
 
@@ -98,7 +113,7 @@ curl -sS -X POST "$HOST/git/access" \
   -A stylebook-live-run \
   -H "Authorization: Bearer $PERSON_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"name":"library","write":false}'
+  -d '{"name":"demo-library","write":false}'
 ```
 
 Take `token` from the response. Strip the scheme from `$HOST`:
@@ -108,7 +123,7 @@ HOST_ONLY=${HOST#https://}
 ```
 
 ```sh
-git clone "https://stylebook:<token>@${HOST_ONLY}/git/library.git" stylebook-library
+git clone "https://stylebook:<token>@${HOST_ONLY}/git/demo-library.git" stylebook-library
 ```
 
 That clone needs only Git. The files in `stylebook-library` are the library.
@@ -146,7 +161,7 @@ curl -sS -X POST "$HOST/mcp" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_item","arguments":{"path":"skills/interview-to-draft/SKILL.md"}}}'
 ```
 
-To suggest a change, call `suggest_change` with the full new text of the page and a `why`. Sign in on the page with `$PERSON_KEY` and the suggestion is listed there.
+To suggest a change, call `suggest_change` with the full new text of the page and a `why`. Sign in on the page with the Editor address and the suggestion is listed there.
 
 ### Many agents at once
 

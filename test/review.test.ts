@@ -6,13 +6,16 @@ import worker from "../src/index";
 import { STARTER_SKILL, STARTER_SKILL_PATH } from "../src/seed";
 import { recordPush } from "../src/audit";
 import { SUGGESTION_READS } from "../src/review";
-import { LIBRARY, readBytes } from "../src/workspace";
+import { libraryName, readBytes } from "../src/workspace";
 import { FakeWorkspace } from "./fake-artifacts";
 import { memoryD1 } from "./memory-d1";
 import { serveWorker } from "./serve";
 
 const PERSON_KEY = "review-person-key-0001";
 const AGENT_KEY = "review-agent-key-00001";
+const WS = "desk";
+const LIBRARY = libraryName(WS);
+const PERSON_EMAIL = "editor@stylebook.invalid";
 const BANNED =
 	/\b(git|repos?|branches?|commits?|push(?:ed|ing)?|pull|merge[ds]?|fork(?:ed|ing)?|squash(?:ed|ing)?|rebase[ds]?|clon(?:e|ed|ing)|tokens?|prs?|pr)\b/i;
 
@@ -20,11 +23,18 @@ function visible(html: string): string {
 	return html
 		.replace(/<script[\s\S]*?<\/script>/gi, " ")
 		.replace(/<style[\s\S]*?<\/style>/gi, " ")
+		.replace(/<pre\b[^>]*\bdata-setup\b[^>]*>[\s\S]*?<\/pre>/gi, " ")
 		.replace(/<[^>]+>/g, " ")
 		.replace(/&amp;/g, "&")
 		.replace(/&lt;/g, "<")
 		.replace(/&gt;/g, ">")
 		.replace(/&quot;/g, '"');
+}
+
+function sessionCookie(response: Response): string {
+	const cookies = response.headers.getSetCookie?.() ?? [response.headers.get("set-cookie") ?? ""];
+	const match = cookies.find((item) => item.startsWith("stylebook="));
+	return (match ?? "").split(";")[0] ?? "";
 }
 
 function assertClean(html: string) {
@@ -111,24 +121,39 @@ describe("review screen", () => {
 	let close: () => Promise<void> = async () => {};
 	let cookie = "";
 
+	const inbox: { text?: string }[] = [];
 	const env = (): Env => ({
 		WORKSPACE: workspace.binding,
 		DEMO_KEY: "secret",
 		DB: db,
 		SUGGESTIONS: {} as Env["SUGGESTIONS"],
 		ARRIVALS: {} as Env["ARRIVALS"],
+		EMAIL: {
+			async send(message) {
+				inbox.push(message);
+				return { messageId: "1" };
+			},
+		},
 	});
 
 	beforeAll(async () => {
 		workspace = await FakeWorkspace.start();
 		db = memoryD1();
-		await registerActor(db, { id: "reviewer", kind: "person", name: "Editor", key: PERSON_KEY });
+		await registerActor(db, {
+			id: "reviewer",
+			kind: "person",
+			name: "Editor",
+			workspaceId: WS,
+			email: PERSON_EMAIL,
+			key: PERSON_KEY,
+		});
 		await registerActor(db, {
 			id: "pencil",
 			kind: "agent",
 			name: "Cursor",
 			ownerId: "reviewer",
 			model: "cursor",
+			workspaceId: WS,
 			key: AGENT_KEY,
 		});
 		const server = await serveWorker(env());
@@ -150,11 +175,13 @@ describe("review screen", () => {
 		});
 	}
 
-	it("signs in with a Stylebook key and publishes the sample library", async () => {
+	it("signs in from an email link and publishes the sample library", async () => {
 		const anon = await fetch(`${origin}/`);
 		expect(anon.status).toBe(200);
 		const signIn = await anon.text();
-		expect(signIn).toContain("Stylebook key");
+		expect(signIn).toContain("Start a workspace");
+		expect(signIn).toContain("Send a sign-in link");
+		expect(signIn).not.toContain("Stylebook key");
 		assertClean(signIn);
 		expect(signIn).toContain("@media (max-width: 1099px)");
 		expect(signIn).toContain(".page { order: 1; }");
@@ -164,22 +191,26 @@ describe("review screen", () => {
 		const refused = await fetch(`${origin}/sign-in`, {
 			method: "POST",
 			headers: { "Content-Type": "application/x-www-form-urlencoded" },
-			body: "key=secret",
+			body: "email=not-an-email",
 		});
-		expect(refused.status).toBe(401);
+		expect(refused.status).toBe(400);
 
-		const signed = await fetch(`${origin}/sign-in`, {
+		const sent = await fetch(`${origin}/sign-in`, {
 			method: "POST",
-			redirect: "manual",
 			headers: { "Content-Type": "application/x-www-form-urlencoded" },
-			body: `key=${encodeURIComponent(PERSON_KEY)}`,
+			body: `email=${encodeURIComponent(PERSON_EMAIL)}`,
 		});
+		expect(sent.status).toBe(200);
+		const letter = inbox.at(-1)?.text ?? "";
+		const secret = letter.match(/\/s\/([0-9a-f]{64})/)?.[1] ?? "";
+		expect(secret).toHaveLength(64);
+		const signed = await fetch(`${origin}/s/${secret}`, { redirect: "manual" });
 		expect(signed.status).toBe(303);
-		const set = signed.headers.get("set-cookie") ?? "";
+		const set = signed.headers.getSetCookie?.().find((item) => item.startsWith("stylebook=")) ?? "";
 		expect(set).toContain("HttpOnly");
 		expect(set).toContain("Secure");
 		expect(set).toContain("SameSite=Strict");
-		cookie = set.split(";")[0] ?? "";
+		cookie = sessionCookie(signed);
 
 		const desk = await fetch(`${origin}/`, { headers: { Cookie: cookie } });
 		const html = await desk.text();
@@ -207,7 +238,7 @@ describe("review screen", () => {
 			expect(saved.status, await saved.clone().text()).toBe(200);
 		}
 
-		const page = await fetch(`${origin}/?item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=sug-pencil-001`, {
+		const page = await fetch(`${origin}/?item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=desk-sug-pencil-001`, {
 			headers: { Cookie: cookie },
 		});
 		const html = await page.text();
@@ -223,7 +254,7 @@ describe("review screen", () => {
 		const before = workspace.git(LIBRARY, "rev-parse", "HEAD").trim();
 		const published = await post(
 			"/publish",
-			`item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=sug-pencil-001`,
+			`item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=desk-sug-pencil-001`,
 		);
 		expect(published.status).toBe(303);
 		expect(published.headers.get("location")).toContain("Nothing");
@@ -231,7 +262,7 @@ describe("review screen", () => {
 
 		const kept = await post(
 			"/resolve",
-			`item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=sug-pencil-001&mode=keep-other`,
+			`item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=desk-sug-pencil-001&mode=keep-other`,
 		);
 		expect(kept.status).toBe(303);
 		expect(new URL(kept.headers.get("location") ?? "/", origin).searchParams.get("notice")).toContain(
@@ -254,14 +285,14 @@ describe("review screen", () => {
 		expect(again.status).toBe(200);
 		const keptThis = await post(
 			"/resolve",
-			`item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=sug-pencil-003&mode=keep-this`,
+			`item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=desk-sug-pencil-003&mode=keep-this`,
 		);
 		expect(keptThis.status).toBe(303);
 		const afterThis = new TextDecoder().decode((await readBytes(await workspace.binding.get(LIBRARY), STARTER_SKILL_PATH))!);
 		expect(afterThis).toContain("including the pauses");
 
-		await post("/decline", `item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=sug-pencil-001`);
-		await post("/decline", `item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=sug-pencil-007`);
+		await post("/decline", `item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=desk-sug-pencil-001`);
+		await post("/decline", `item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=desk-sug-pencil-007`);
 		const freshLeft = afterThis.replace("including the pauses", "including the small talk");
 		const freshRight = afterThis.replace("including the pauses", "including the asides");
 		await fetch(`${origin}/suggestion`, {
@@ -286,14 +317,14 @@ describe("review screen", () => {
 		});
 		const combined = await post(
 			"/resolve",
-			`item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=sug-pencil-011&mode=combine`,
+			`item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=desk-sug-pencil-011&mode=combine`,
 		);
 		expect(combined.status).toBe(303);
 		const location = combined.headers.get("location") ?? "";
-		expect(location).toContain("suggestion=sug-pencil-combine-");
+		expect(location).toContain("suggestion=desk-sug-pencil-combine-");
 		const copy = new URL(location, origin).searchParams.get("suggestion")!;
 		const info = await (await workspace.binding.get(copy)).info();
-		expect(info.source).toBe(`artifacts:${workspace.namespace}/library`);
+		expect(info.source).toBe(`artifacts:${workspace.namespace}/${LIBRARY}`);
 		const combinedText = new TextDecoder().decode((await readBytes(await workspace.binding.get(copy), STARTER_SKILL_PATH))!);
 		expect(combinedText.indexOf("including the small talk")).toBeGreaterThan(-1);
 		expect(combinedText.indexOf("including the asides")).toBeGreaterThan(combinedText.indexOf("including the small talk"));
@@ -335,8 +366,8 @@ describe("review screen", () => {
 		await make("021", left);
 		await make("022", right);
 		const [one, two] = await Promise.all([
-			post("/publish", `item=${encodeURIComponent(brief)}&suggestion=sug-pencil-021`),
-			post("/publish", `item=${encodeURIComponent(brief)}&suggestion=sug-pencil-022`),
+			post("/publish", `item=${encodeURIComponent(brief)}&suggestion=desk-sug-pencil-021`),
+			post("/publish", `item=${encodeURIComponent(brief)}&suggestion=desk-sug-pencil-022`),
 		]);
 		expect([one.status, two.status]).toEqual([303, 303]);
 		const text = new TextDecoder().decode((await readBytes(await workspace.binding.get(LIBRARY), brief))!);
@@ -373,16 +404,25 @@ describe("review screen", () => {
 				Authorization: `Bearer ${AGENT_KEY}`,
 				"Content-Type": "application/x-www-form-urlencoded",
 			},
-			body: `item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=sug-pencil-001`,
+			body: `item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=desk-sug-pencil-001`,
 		});
 		expect(denied.status).toBe(403);
 	});
 
 	it("reads a page of copies instead of every copy", async () => {
-		const editor = { id: "reviewer", kind: "person" as const, name: "Editor", ownerId: null, model: null };
+		const editor = {
+			id: "reviewer",
+			kind: "person" as const,
+			name: "Editor",
+			ownerId: null,
+			model: null,
+			workspaceId: WS,
+			email: PERSON_EMAIL,
+			removedAt: null,
+		};
 		for (let index = 0; index < 40; index++) {
 			await recordPush(db, {
-				repoName: `sug-reviewer-old${index}`,
+				repoName: `desk-sug-reviewer-old${index}`,
 				refName: "refs/heads/main",
 				editionId: index.toString(16).padStart(40, "a"),
 				actor: editor,
@@ -397,9 +437,37 @@ describe("review screen", () => {
 		expect(response.status).toBe(200);
 		const html = await response.text();
 		assertClean(html);
-		const names = new Set(workspace.gets.filter((name) => name.startsWith("sug-")));
+		const names = new Set(workspace.gets.filter((name) => name.startsWith("desk-sug-")));
 		expect(names.size).toBeLessThanOrEqual(SUGGESTION_READS + 1);
 		expect(names.size).toBeLessThan(40);
 		expect(html).toContain("Older suggestions");
+	});
+
+	it("shows an agent key once, and the setup stays out of the page text", async () => {
+		const people = await fetch(`${origin}/people`, { headers: { Cookie: cookie } });
+		const page = await people.text();
+		assertClean(page);
+		expect(page).toContain("Invite a colleague");
+		expect(page).toContain("Connect an agent");
+
+		const connected = await fetch(`${origin}/agents`, {
+			method: "POST",
+			headers: { Cookie: cookie, "Content-Type": "application/x-www-form-urlencoded" },
+			body: "name=Claude%2C+working+for+me&tool=claude",
+		});
+		const shown = await connected.text();
+		assertClean(shown);
+		expect(shown).toContain("shown once");
+		expect(shown).toContain("data-setup");
+		expect(shown).toContain("For Cursor or Claude Code");
+		expect(shown).toContain("For a folder on your computer");
+		const key = shown.match(/<code>([0-9a-f]{64})<\/code>/)?.[1] ?? "";
+		expect(key).toHaveLength(64);
+
+		const again = await fetch(`${origin}/people`, { headers: { Cookie: cookie } });
+		const hidden = await again.text();
+		assertClean(hidden);
+		expect(hidden).not.toContain(key);
+		expect(hidden).not.toContain("data-setup");
 	});
 });

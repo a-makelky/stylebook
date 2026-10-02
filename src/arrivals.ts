@@ -6,7 +6,7 @@
 // they sit, and records only key names when it cannot tell. It never copies
 // accountId, a token, or a remote URL.
 
-import { LIBRARY } from "./workspace";
+import { isLibraryName } from "./workspace";
 
 export type ArrivalKind = "library" | "suggestion" | "notes" | "other" | "unparsed";
 
@@ -99,8 +99,8 @@ function keyPaths(value: unknown, prefix = "", depth = 0): string[] {
 
 export function arrivalKind(repoName: string, refName: string): ArrivalKind {
 	if (refName.startsWith("refs/notes/")) return "notes";
-	if (repoName === LIBRARY) return "library";
-	if (repoName.startsWith("sug-")) return "suggestion";
+	if (repoName === "library" || isLibraryName(repoName)) return "library";
+	if (repoName.startsWith("sug-") || repoName.includes("-sug-")) return "suggestion";
 	return "other";
 }
 

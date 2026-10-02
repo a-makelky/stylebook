@@ -9,6 +9,8 @@ import { actorByKey, allows, ownerOf, refusal, type Actor } from "./actors";
 import { recordPush } from "./audit";
 import type { Env } from "./env";
 import { describeError } from "./redact";
+import { actorBySession } from "./teams";
+import { scopedEnv } from "./usage";
 import { getRepo } from "./workspace";
 
 const ROUTE =
@@ -121,7 +123,7 @@ export async function handleGit(request: Request, env: Env): Promise<Response> {
 
 	const key = presentedKey(request);
 	if (!key) return text(401, "Missing or unknown key.", true);
-	const actor = await actorByKey(env.DB, key);
+	const actor = (await actorByKey(env.DB, key)) ?? (await actorBySession(env.DB, key));
 	const grant = actor ? null : await grantByToken(env.DB, key);
 	const caller = actor ?? grant?.actor ?? null;
 	if (!caller) return text(401, "Missing or unknown key.", true);
@@ -130,7 +132,9 @@ export async function handleGit(request: Request, env: Env): Promise<Response> {
 	}
 	if (!allows(caller, repoName, writing)) return text(403, refusal(repoName, writing));
 
-	const repo = await getRepo(env.WORKSPACE, repoName);
+	const scoped = scopedEnv(env, caller.workspaceId);
+	try {
+	const repo = await getRepo(scoped.env.WORKSPACE, repoName);
 	if (!repo) return text(404, "That copy does not exist.");
 
 	// Bearer takes the full token string the control plane returned, including
@@ -188,7 +192,9 @@ export async function handleGit(request: Request, env: Env): Promise<Response> {
 		return text(upstream.status === 401 ? 502 : upstream.status, "The workspace refused the request.");
 	}
 
-	if (!writing) return new Response(upstream.body, { status: upstream.status, headers: outHeaders });
+	if (!writing) {
+		return new Response(upstream.body, { status: upstream.status, headers: outHeaders });
+	}
 
 	const bytes = new Uint8Array(await upstream.arrayBuffer());
 	if (upstream.status === 200 && gitBody) {
@@ -196,6 +202,9 @@ export async function handleGit(request: Request, env: Env): Promise<Response> {
 		if (accepted.length > 0) await remember(env, repoName, caller, accepted);
 	}
 	return new Response(bytes, { status: upstream.status, headers: outHeaders });
+	} finally {
+		await scoped.flush();
+	}
 }
 
 async function remember(env: Env, repoName: string, actor: Actor, updates: RefUpdate[]): Promise<void> {

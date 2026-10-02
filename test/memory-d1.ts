@@ -16,9 +16,13 @@ export function memoryD1(): D1Database {
 		prepare(sql: string) {
 			return {
 				bind(...values: unknown[]) {
-					// Node's SQLite binds `?` but not `?1`. D1 accepts both.
+					// Node's SQLite binds `?` but not `?1`. D1 reuses a numbered
+					// placeholder, so each `?1` is expanded to the same argument.
+					const numbered = [...sql.matchAll(/\?(\d+)/g)];
 					const statement = db.prepare(sql.replace(/\?\d+/g, "?"));
-					const args = values as never[];
+					const args = (
+						numbered.length > 0 ? numbered.map((match) => values[Number(match[1]) - 1]) : values
+					) as never[];
 					return {
 						async run() {
 							statement.run(...args);

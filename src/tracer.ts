@@ -17,6 +17,7 @@ import {
 export interface TracerOptions {
 	actor: string;
 	session: string;
+	workspaceId?: string;
 	/** Add one more edition to the library before making the copy. */
 	addEdition?: boolean;
 	wait?: WaitOptions;
@@ -81,7 +82,8 @@ export async function runTracer(
 	workspace: Artifacts,
 	options: TracerOptions,
 ): Promise<TracerResult> {
-	const library = await ensureLibrary(workspace, options.wait);
+	const workspaceId = options.workspaceId ?? "trace";
+	const library = await ensureLibrary(workspace, workspaceId, options.wait);
 	const before = await listEditions(library.repo);
 
 	let publishedEdition: string | null = null;
@@ -107,7 +109,7 @@ export async function runTracer(
 		});
 	}
 
-	const name = suggestionName(options.actor, options.session);
+	const name = suggestionName(workspaceId, options.actor, options.session);
 	const suggestion = await ensureSuggestion(
 		workspace,
 		library.repo,
