@@ -1,7 +1,13 @@
 name = "stylebook"
 main = "src/index.ts"
 compatibility_date = "2026-09-01"
-compatibility_flags = ["nodejs_compat"]
+# global_fetch_strictly_public: a fetch from this Worker to its own host is
+# another Worker on the same zone. Without this flag that fetch returns 1042.
+# With it, the fetch comes back in through the public front door, which is how
+# the request handler reaches the Git route.
+# https://developers.cloudflare.com/workers/configuration/compatibility-flags/#global-fetch-strictly-public
+# https://developers.cloudflare.com/workers/observability/errors/
+compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 
 # One Artifacts namespace is one workspace. The library and every suggestion
 # copy live in it, because a copy made with fork() stays in its source namespace.

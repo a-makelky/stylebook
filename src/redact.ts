@@ -42,7 +42,13 @@ export function describeError(error: unknown, attempt = 1): Failure {
 		else if (typeof record.status === "number") code = `HTTP_${record.status}`;
 		else if (error instanceof Error && error.name && error.name !== "Error") code = error.name;
 	}
-	const message = error instanceof Error ? error.message : String(error);
+	let message = error instanceof Error ? error.message : String(error);
+	if (typeof error === "object" && error !== null && "data" in error) {
+		const data = (error as { data?: { response?: unknown } }).data;
+		if (typeof data?.response === "string" && data.response) {
+			message = `${message}: ${data.response.slice(0, 180)}`;
+		}
+	}
 	return { attempt, code, message: redact(message) };
 }
 

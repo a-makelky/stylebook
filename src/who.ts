@@ -19,15 +19,29 @@ export interface Who {
 async function noteText(env: Env, repoName: string, edition: string): Promise<string | null> {
 	const repo = await getRepo(env.WORKSPACE, repoName);
 	if (!repo) return null;
+	// readFile resolves a branch, a tag, or a commit id. A notes ref is none of
+	// those, so the commit id recorded for refs/notes/* is what the read uses.
+	// https://developers.cloudflare.com/artifacts/concepts/best-practices/
+	const commits = await env.DB.prepare(
+		`SELECT edition_id FROM gateway_pushes
+     WHERE repo_name = ?1 AND ref_name = ?2
+     ORDER BY id DESC
+     LIMIT 20`,
+	)
+		.bind(repoName, NOTES_REF)
+		.all<{ edition_id: string }>();
+	const refs = [NOTES_REF, ...(commits.results ?? []).map((row) => row.edition_id)];
 	const paths = [edition, `${edition.slice(0, 2)}/${edition.slice(2)}`];
-	for (const path of paths) {
-		try {
-			const blob = await repo.readFile({ ref: NOTES_REF, path });
-			if (!blob) continue;
-			const text = new TextDecoder().decode(new Uint8Array(await blob.arrayBuffer()));
-			if (text) return text;
-		} catch {
-			// A missing path throws. Try the other notes layout.
+	for (const ref of refs) {
+		for (const path of paths) {
+			try {
+				const blob = await repo.readFile({ ref, path });
+				if (!blob) continue;
+				const text = new TextDecoder().decode(new Uint8Array(await blob.arrayBuffer()));
+				if (text) return text;
+			} catch {
+				// A missing path throws. Try the other notes layout.
+			}
 		}
 	}
 	return null;
