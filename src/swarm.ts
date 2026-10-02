@@ -19,14 +19,15 @@ import {
 	type ArrivalRow,
 	type ExpectedPush,
 } from "./arrivals";
+import { auditSince, type AuditSnapshot } from "./audit";
 import { EDIT_COUNT } from "./edits";
-import { NOTES_REF, publishFile } from "./git";
-import { probeForkDuringPush, pushNotesOnCopy, type NotesResult, type ProbeResult } from "./probe";
+import { gatewayRemote } from "./gateway";
+import { NOTES_REF, publishFile, type Author } from "./git";
+import { probeForkDuringPush, type ProbeResult } from "./probe";
 import { describeError, redact, type Failure } from "./redact";
 import { STARTER_SKILL, STARTER_SKILL_PATH } from "./seed";
-import { runSuggestionSession, type SessionParams, type SessionResult } from "./session";
-import { DEMO_AUTHOR } from "./tracer";
-import { ensureLibrary, getRepo, suggestionName, writeAccess, LIBRARY } from "./workspace";
+import { runSuggestionSession, type SessionGateway, type SessionParams, type SessionResult } from "./session";
+import { ensureLibrary, suggestionName, LIBRARY } from "./workspace";
 
 export const MAX_SESSIONS = 100;
 const MAIN_REF = "refs/heads/main";
@@ -65,10 +66,21 @@ export function inlineLauncher(workspace: Artifacts): SessionLauncher {
 	};
 }
 
+export interface SwarmGateway {
+	origin: string;
+	personKey: string;
+	agentKey: string;
+	actorName: string;
+	ownerName: string;
+	model: string;
+}
+
 export interface SwarmOptions {
 	workspace: Artifacts;
 	launcher: SessionLauncher;
 	arrivals: ArrivalLog;
+	/** Sessions and library writes go through the Git route as these actors. */
+	gateway: SwarmGateway;
 	n: number;
 	actor: string;
 	runId?: string;
@@ -77,6 +89,8 @@ export interface SwarmOptions {
 	/** How long to wait for the push Workflow to write arrival rows. */
 	arrivalWaitMs?: number;
 	pollMs?: number;
+	/** When set, also wait until the arrival Workflow has confirmed the gateway rows. */
+	audit?: { snapshot(since: string): Promise<AuditSnapshot> };
 }
 
 export interface SwarmReport {
@@ -95,13 +109,19 @@ export interface SwarmReport {
 	probe: ProbeResult;
 	sessions: SessionResult[];
 	timing: SessionTiming;
-	notes: NotesResult;
+	notes: { ref: string; pushed: number; failures: Failure[] };
 	arrivals: {
 		waitedMs: number;
 		rows: ArrivalRow[];
 		missing: ExpectedPush[];
 		extras: ArrivalRow[];
 	};
+	audit: {
+		waitedMs: number;
+		confirmed: number;
+		unconfirmed: ExpectedPush[];
+		unseen: AuditSnapshot["unseen"];
+	} | null;
 	failures: Failure[];
 }
 
@@ -206,6 +226,7 @@ function failedSession(params: SessionParams, failures: Failure[]): SessionResul
 		editionCount: null,
 		onTopOfLibrary: false,
 		alreadyApplied: false,
+		noteCommit: null,
 		failures,
 	};
 }
@@ -305,16 +326,21 @@ export async function runSwarm(options: SwarmOptions): Promise<SwarmReport> {
 
 	const library = await ensureLibrary(options.workspace);
 	const before = await listEditionsOf(library.repo);
+	const personAuthor: Author = { name: options.gateway.ownerName, email: "editor@stylebook.invalid" };
+	const libraryAccess = {
+		remote: gatewayRemote(options.gateway.origin, LIBRARY),
+		token: options.gateway.personKey,
+		author: personAuthor,
+	};
 	let seededEdition: string | null = null;
 	if (before.length === 0) {
-		const access = await writeAccess(library.repo, 120);
 		seededEdition = await publishFile({
-			remote: access.remote,
-			token: access.token,
+			remote: libraryAccess.remote,
+			token: libraryAccess.token,
 			path: STARTER_SKILL_PATH,
 			content: STARTER_SKILL,
 			message: "Add the interview-to-draft skill",
-			author: DEMO_AUTHOR,
+			author: personAuthor,
 			hasHistory: false,
 		});
 	}
@@ -324,16 +350,25 @@ export async function runSwarm(options: SwarmOptions): Promise<SwarmReport> {
 		library.repo,
 		options.actor,
 		runId,
+		libraryAccess,
 	);
 	failures.push(...probe.libraryPush.failures, ...probe.fork.failures);
 
 	const libraryTipBeforeSessions = (await listEditionsOf(library.repo))[0] ?? null;
 	const sessionsStartedMs = Date.now();
+	const sessionGateway: SessionGateway = {
+		origin: options.gateway.origin,
+		key: options.gateway.agentKey,
+		actorName: options.gateway.actorName,
+		ownerName: options.gateway.ownerName,
+		model: options.gateway.model,
+	};
 	const params: SessionParams[] = Array.from({ length: options.n }, (_, index) => ({
 		actor: options.actor,
 		session: `${runId}-${String(index + 1).padStart(3, "0")}`,
 		editIndex: index,
 		runId,
+		gateway: sessionGateway,
 	}));
 	const launched = await startAll(options.launcher, params, failures);
 	const sessions = await waitForSessions(launched, sessionsStartedMs + 180_000);
@@ -342,26 +377,13 @@ export async function runSwarm(options: SwarmOptions): Promise<SwarmReport> {
 
 	const libraryTipAfterSessions = (await listEditionsOf(library.repo))[0] ?? null;
 
-	let notes: NotesResult = {
-		repoName: null,
+	const notes = {
 		ref: NOTES_REF,
-		target: null,
-		pushed: false,
-		failures: [],
+		pushed: sessions.filter((session) => session.noteCommit).length,
+		failures: sessions
+			.filter((session) => session.ok === false && session.edition && !session.noteCommit)
+			.flatMap((session) => session.failures),
 	};
-	const notesHost = sessions.find((session) => session.ok);
-	if (notesHost) {
-		const repo = await getRepo(options.workspace, notesHost.name);
-		if (repo) notes = await pushNotesOnCopy(repo, notesHost.name);
-		else {
-			notes.failures.push({
-				attempt: 1,
-				code: "NOT_FOUND",
-				message: "The copy for the notes push could not be opened",
-			});
-		}
-	}
-	failures.push(...notes.failures);
 
 	const expected: ExpectedPush[] = [];
 	if (seededEdition) {
@@ -390,13 +412,15 @@ export async function runSwarm(options: SwarmOptions): Promise<SwarmReport> {
 			});
 		}
 	}
-	if (notes.pushed && notes.repoName && notes.target) {
-		expected.push({
-			repoName: notes.repoName,
-			refName: notes.ref,
-			editionId: notes.target,
-			kind: "notes",
-		});
+	for (const session of sessions) {
+		if (session.noteCommit && session.ok) {
+			expected.push({
+				repoName: session.name,
+				refName: NOTES_REF,
+				editionId: session.noteCommit,
+				kind: "notes",
+			});
+		}
 	}
 
 	const arrivalStarted = Date.now();
@@ -406,6 +430,24 @@ export async function runSwarm(options: SwarmOptions): Promise<SwarmReport> {
 		await sleep(options.pollMs ?? 2000);
 		rows = await options.arrivals.listSince(startedAt);
 		matched = matchArrivals(expected, rows);
+	}
+
+	let audit: SwarmReport["audit"] = null;
+	if (options.audit) {
+		const auditStarted = Date.now();
+		let snapshot = await options.audit.snapshot(startedAt);
+		let unconfirmed = unconfirmedPushes(expected, snapshot);
+		while (unconfirmed.length > 0 && Date.now() - auditStarted < arrivalWaitMs) {
+			await sleep(options.pollMs ?? 2000);
+			snapshot = await options.audit.snapshot(startedAt);
+			unconfirmed = unconfirmedPushes(expected, snapshot);
+		}
+		audit = {
+			waitedMs: Date.now() - auditStarted,
+			confirmed: expected.length - unconfirmed.length,
+			unconfirmed,
+			unseen: snapshot.unseen,
+		};
 	}
 
 	const endedAt = new Date().toISOString();
@@ -433,8 +475,26 @@ export async function runSwarm(options: SwarmOptions): Promise<SwarmReport> {
 			missing: matched.missing,
 			extras: matched.extras,
 		},
+		audit,
 		failures,
 	};
+}
+
+function unconfirmedPushes(expected: ExpectedPush[], snapshot: AuditSnapshot): ExpectedPush[] {
+	return expected.filter(
+		(want) =>
+			!snapshot.gateway.some(
+				(row) =>
+					row.repoName === want.repoName &&
+					row.refName === want.refName &&
+					row.editionId === want.editionId &&
+					row.confirmedAt,
+			),
+	);
+}
+
+export function d1AuditLog(db: D1Database): { snapshot(since: string): Promise<AuditSnapshot> } {
+	return { snapshot: (since) => auditSince(db, since) };
 }
 
 async function listEditionsOf(repo: ArtifactsRepo): Promise<string[]> {

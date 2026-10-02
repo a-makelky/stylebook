@@ -39,6 +39,22 @@ export function suggestionName(actor: string, session: string): string {
 	return `sug-${slug(actor)}-${slug(session)}`.slice(0, 63);
 }
 
+/** Prefix of every copy that belongs to one actor. The trailing hyphen keeps `sug-a-` from matching `sug-agent-`. */
+export function copyPrefix(actorId: string): string {
+	return `sug-${slug(actorId)}-`;
+}
+
+/**
+ * Actor ids have no hyphens, so the actor is exactly the segment between
+ * `sug-` and the next hyphen. A prefix test alone would let actor "a" open
+ * copies of an actor whose id starts with "a-".
+ */
+export function ownsCopy(actorId: string, repoName: string): boolean {
+	if (!/^[a-z0-9]+$/.test(actorId)) return false;
+	if (!repoName.startsWith(copyPrefix(actorId))) return false;
+	return repoName.split("-")[1] === actorId;
+}
+
 export interface WaitOptions {
 	attempts?: number;
 	delayMs?: number;

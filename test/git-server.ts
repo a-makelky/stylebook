@@ -21,12 +21,19 @@ export type Authorize = (
 	secret: string | null,
 ) => boolean;
 
-function basicPassword(request: IncomingMessage): string | null {
+/** Basic password or Bearer token. Artifacts tokens may carry `?expires=`. */
+function presentedSecret(request: IncomingMessage): string | null {
 	const header = request.headers.authorization;
-	if (!header?.startsWith("Basic ")) return null;
-	const decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
-	const separator = decoded.indexOf(":");
-	return separator === -1 ? null : decoded.slice(separator + 1);
+	if (!header) return null;
+	let raw: string | null = null;
+	if (header.startsWith("Bearer ")) raw = header.slice(7).trim();
+	else if (header.startsWith("Basic ")) {
+		const decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
+		const separator = decoded.indexOf(":");
+		raw = separator === -1 ? null : decoded.slice(separator + 1);
+	}
+	if (!raw) return null;
+	return raw.split("?expires=")[0] || null;
 }
 
 export async function startGitServer(
@@ -40,7 +47,7 @@ export async function startGitServer(
 			url.pathname.endsWith("/git-receive-pack") ||
 			url.searchParams.get("service") === "git-receive-pack";
 
-		if (!authorize(repo, isPush ? "write" : "read", basicPassword(request))) {
+		if (!authorize(repo, isPush ? "write" : "read", presentedSecret(request))) {
 			response.writeHead(401, { "WWW-Authenticate": 'Basic realm="test"' });
 			response.end("Unauthorized");
 			return;

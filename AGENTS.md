@@ -33,6 +33,11 @@ Code, comments and this file may use the Git words. Users never see them.
 - `src/workspace.ts` — library and suggestion copies over the Artifacts binding
 - `src/git.ts` — writing an edition with isomorphic-git
 - `src/memory-fs.ts` — in-memory file system isomorphic-git runs on
+- `src/actors.ts` — people, agents, and hashed keys
+- `src/gateway.ts` — the Git route that forwards smart HTTP to Artifacts
+- `src/notes.ts` — the note stored on an agent-saved edition
+- `src/who.ts` — who saved an edition, and the note
+- `src/audit.ts` — gateway rows, and the push event that confirms or flags them
 - `src/tracer.ts` — the first end-to-end path: library, copy, read back
 - `src/edits.ts` — scripted changes the concurrent sessions apply
 - `src/session.ts` — one suggestion session

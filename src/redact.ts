@@ -11,6 +11,10 @@ const SECRET_KEYS = new Set([
 	"accountId",
 	"account_id",
 	"headers",
+	"key",
+	"personKey",
+	"agentKey",
+	"stylebookKey",
 ]);
 
 export interface Failure {
@@ -22,6 +26,7 @@ export interface Failure {
 export function redact(value: string): string {
 	return value
 		.replace(/art_v1_[A-Za-z0-9._~-]+/g, "<token>")
+		.replace(/\bsbk_[A-Za-z0-9_-]+/g, "<key>")
 		.replace(/https?:\/\/[^\s"'<>]+/gi, "<url>")
 		.replace(/\?expires=\d+/g, "")
 		.slice(0, 400);
@@ -37,7 +42,13 @@ export function describeError(error: unknown, attempt = 1): Failure {
 		else if (typeof record.status === "number") code = `HTTP_${record.status}`;
 		else if (error instanceof Error && error.name && error.name !== "Error") code = error.name;
 	}
-	const message = error instanceof Error ? error.message : String(error);
+	let message = error instanceof Error ? error.message : String(error);
+	if (typeof error === "object" && error !== null && "data" in error) {
+		const data = (error as { data?: { response?: unknown } }).data;
+		if (typeof data?.response === "string" && data.response) {
+			message = `${message}: ${data.response.slice(0, 180)}`;
+		}
+	}
 	return { attempt, code, message: redact(message) };
 }
 

@@ -15,7 +15,7 @@ export interface Author {
 export interface PublishInput {
 	/** HTTPS Git remote of the repo to write to. */
 	remote: string;
-	/** Repo-scoped write token, as Artifacts returns it. */
+	/** Repo-scoped write token, as Artifacts returns it, or a Stylebook key for the Git route. */
 	token: string;
 	/** Repository-relative path of the file to write. */
 	path: string;
@@ -32,6 +32,13 @@ export interface PublishInput {
 	beforePush?: () => void;
 	/** Marks the moment the send starts and the moment it returns. */
 	mark?: (phase: "push-start" | "push-end") => void;
+	/** When set, a git note is written for the new edition and pushed under refs/notes/*. */
+	note?: { text: string };
+}
+
+export interface PublishOutcome {
+	edition: string;
+	noteCommit: string | null;
 }
 
 /** A note ref, used to see whether a push of refs/notes/* is reported. */
@@ -50,8 +57,35 @@ function auth(token: string) {
 	return () => ({ username: "x", password });
 }
 
-/** Write one file as a new edition and return the new edition's ID. */
-export async function publishFile(input: PublishInput): Promise<string> {
+function gitHeaders(): { "User-Agent": string } {
+	// A fresh object every call. isomorphic-git writes Authorization onto the
+	// headers object it is given, and a shared object would reuse the first key.
+	return { "User-Agent": "stylebook" };
+}
+
+async function pushRef(
+	fs: MemoryFS,
+	remote: string,
+	ref: string,
+	onAuth: () => { username: string; password: string },
+): Promise<void> {
+	const result = await git.push({
+		fs,
+		http,
+		dir: "/work",
+		url: remote,
+		ref,
+		remoteRef: ref,
+		onAuth,
+		headers: gitHeaders(),
+	});
+	if (!result.ok) {
+		throw new Error(`Publishing was rejected: ${result.error ?? "unknown reason"}`);
+	}
+}
+
+/** Write one file as a new edition and, when asked, a note for it. */
+export async function publishSavedEdition(input: PublishInput): Promise<PublishOutcome> {
 	const branch = input.branch ?? "main";
 	const dir = "/work";
 	const fs = new MemoryFS();
@@ -69,6 +103,7 @@ export async function publishFile(input: PublishInput): Promise<string> {
 			singleBranch: true,
 			depth: 1,
 			onAuth,
+			headers: gitHeaders(),
 		});
 	} else {
 		await git.init({ fs, dir, defaultBranch: branch });
@@ -83,63 +118,32 @@ export async function publishFile(input: PublishInput): Promise<string> {
 		author: input.author,
 	});
 
+	let noteCommit: string | null = null;
+	if (input.note) {
+		// The note is a separate commit on refs/notes/*, so the edition itself
+		// does not change. https://developers.cloudflare.com/artifacts/concepts/best-practices/
+		noteCommit = await git.addNote({
+			fs,
+			dir,
+			oid: edition,
+			ref: NOTES_REF,
+			note: input.note.text,
+			author: input.author,
+			force: true,
+		});
+	}
+
 	input.beforePush?.();
 	input.mark?.("push-start");
-	const result = await git.push({
-		fs,
-		http,
-		dir,
-		url: input.remote,
-		ref: branch,
-		onAuth,
-	});
+	await pushRef(fs, input.remote, branch, onAuth);
+	if (noteCommit) await pushRef(fs, input.remote, NOTES_REF, onAuth);
 	input.mark?.("push-end");
-	if (!result.ok) {
-		throw new Error(`Publishing was rejected: ${result.error ?? "unknown reason"}`);
-	}
 
-	return edition;
+	return { edition, noteCommit };
 }
 
-/**
- * Point a notes ref at the current edition and send that ref.
- * The binding does not write refs, so this goes through Git, same as a file.
- * https://developers.cloudflare.com/artifacts/examples/isomorphic-git/
- */
-export async function publishNotesRef(input: {
-	remote: string;
-	token: string;
-	ref?: string;
-}): Promise<{ ref: string; target: string }> {
-	const ref = input.ref ?? NOTES_REF;
-	const dir = "/work";
-	const fs = new MemoryFS();
-	const onAuth = auth(input.token);
-
-	await git.clone({
-		fs,
-		http,
-		dir,
-		url: input.remote,
-		ref: "main",
-		singleBranch: true,
-		depth: 1,
-		onAuth,
-	});
-	const target = await git.resolveRef({ fs, dir, ref: "HEAD" });
-	await git.writeRef({ fs, dir, ref, value: target, force: true });
-
-	const result = await git.push({
-		fs,
-		http,
-		dir,
-		url: input.remote,
-		ref,
-		remoteRef: ref,
-		onAuth,
-	});
-	if (!result.ok) {
-		throw new Error(`Publishing was rejected: ${result.error ?? "unknown reason"}`);
-	}
-	return { ref, target };
+/** Write one file as a new edition and return the new edition's ID. */
+export async function publishFile(input: PublishInput): Promise<string> {
+	const saved = await publishSavedEdition(input);
+	return saved.edition;
 }

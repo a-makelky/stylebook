@@ -21,7 +21,7 @@ Early. This table is the honest state of the code, not a roadmap.
 | --- | --- |
 | Library, suggestion copy, read back, history (Tracer 1) | Ran live on 2026-10-02. A new copy names the library as its source, the skill read back matched, and a second edition was on both the library and that copy. Calling again for the same session reused the existing copy. See [the run log](docs/runs/2026-10-02-tracer-1.md). |
 | Many agents suggesting at once | Ran live on 2026-10-02. One request started 25 agents together, and a second started 100. Each got its own copy and saved one edition of the interview-to-draft skill. Their work overlapped in time. Each save was recorded when it arrived. See [the run log](docs/runs/2026-10-02-tracer-2.md). |
-| Who made each change and why | Not started |
+| Who made each change and why | Ran live on 2026-10-02. A person and two agents who work for that person are distinct. Saving an edition through Stylebook worked from outside the Worker as well as from an agent. An agent that put someone else's name on an edition was still recorded as that agent, and that key was refused for the library and for another agent's copy. Each agent-saved edition says why, and asking who saved it returns the agent, the person they work for, and that why. A save that did not come through Stylebook was flagged. See [the run log](docs/runs/2026-10-02-tracer-3.md). |
 | Review screen: compare, flag overlaps, publish | Not started |
 | Pull the library with plain Git or over MCP | Not started |
 
@@ -58,10 +58,10 @@ curl -X POST https://<your-worker-url>/demo/suggestions \
   -A stylebook-live-run \
   -H "Authorization: Bearer <your DEMO_KEY>" \
   -H "Content-Type: application/json" \
-  -d '{"n": 25}'
+  -d '{"n": 25, "key": "<agent key>", "personKey": "<person key>"}'
 ```
 
-The response lists each copy, the edition it saved, and whether the agents' work overlapped. It does not include credentials. `n` can be from 1 to 100.
+The response lists each copy, the edition it saved, who saved it, and whether the agents' work overlapped. It does not include credentials. `n` can be from 1 to 100. The agent key and the person key are registered first; the agent works for that person. Ask who saved an edition with `GET /who?edition=<id>`.
 
 These steps were run against a live account on 2026-10-02. The record, with the key removed, is in [docs/runs/2026-10-02-tracer-1.md](docs/runs/2026-10-02-tracer-1.md).
 
