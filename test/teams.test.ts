@@ -233,14 +233,18 @@ describe("workspaces, sign-in, invites and agents", () => {
 
 		const people = await (await fetch(`${origin}/people`, { headers: { Cookie: owner } })).text();
 		const personId = people.match(/action="\/people\/remove"><input type="hidden" name="id" value="([^"]+)"/)?.[1] ?? "";
-		expect(personId).not.toBe("");
-		await fetch(`${origin}/people/remove`, {
+		expect(personId, people).not.toBe("");
+		const removed = await fetch(`${origin}/people/remove`, {
 			method: "POST",
 			headers: { Cookie: owner, "Content-Type": "application/x-www-form-urlencoded" },
 			body: `id=${encodeURIComponent(personId)}`,
 		});
+		const removedHtml = await removed.text();
+		expect(removedHtml, removedHtml).not.toContain("not in this workspace");
 		const lockedOut = await fetch(`${origin}/`, { headers: { Cookie: colleague } });
-		expect(lockedOut.status).toBe(401);
+		const lockedHtml = await lockedOut.text();
+		expect(lockedHtml).toContain("Start a workspace");
+		expect(lockedHtml).not.toContain("Studio");
 	}, 60_000);
 
 	it("asks which workspace when one address belongs to two", async () => {
@@ -292,6 +296,7 @@ describe("workspaces, sign-in, invites and agents", () => {
 
 	it("states the people, agent and suggestion limits in plain language", async () => {
 		const cookie = await openWorkspace("Limits", "limits@stylebook.invalid");
+		expect((await fetch(`${origin}/`, { headers: { Cookie: cookie } })).status).toBe(200);
 		env.MAX_PEOPLE = "1";
 		const invite = await fetch(`${origin}/invite`, {
 			method: "POST",
@@ -307,7 +312,9 @@ describe("workspaces, sign-in, invites and agents", () => {
 			headers: { Cookie: cookie, "Content-Type": "application/x-www-form-urlencoded" },
 			body: "name=One&tool=cursor",
 		});
-		const key = (await first.text()).match(/<code>([0-9a-f]{64})<\/code>/)?.[1] ?? "";
+		const firstHtml = await first.text();
+		const key = firstHtml.match(/<code>([0-9a-f]{64})<\/code>/)?.[1] ?? "";
+		expect(key, firstHtml.slice(0, 800)).toHaveLength(64);
 		const second = await fetch(`${origin}/agents`, {
 			method: "POST",
 			headers: { Cookie: cookie, "Content-Type": "application/x-www-form-urlencoded" },
@@ -340,8 +347,8 @@ describe("workspaces, sign-in, invites and agents", () => {
 					},
 				}),
 			});
-		const saved = (await (await call("alpha")).json()) as { result: { isError: boolean } };
-		expect(saved.result.isError).toBe(false);
+		const saved = (await (await call("alpha")).json()) as { result: { isError: boolean; content: { text: string }[] } };
+		expect(saved.result.isError, saved.result.content[0]?.text).toBe(false);
 		const capped = (await (await call("beta")).json()) as { result: { isError: boolean; content: { text: string }[] } };
 		expect(capped.result.isError).toBe(true);
 		expect(capped.result.content[0]?.text).toContain(LIMIT_MESSAGE.openSuggestions);
