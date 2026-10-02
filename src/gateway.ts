@@ -4,6 +4,7 @@
 // https://developers.cloudflare.com/artifacts/api/git-protocol/
 // https://developers.cloudflare.com/artifacts/concepts/best-practices/
 
+import { grantByToken } from "./access";
 import { actorByKey, allows, ownerOf, refusal, type Actor } from "./actors";
 import { recordPush } from "./audit";
 import type { Env } from "./env";
@@ -121,17 +122,15 @@ export async function handleGit(request: Request, env: Env): Promise<Response> {
 	const key = presentedKey(request);
 	if (!key) return text(401, "Missing or unknown key.", true);
 	const actor = await actorByKey(env.DB, key);
-	if (!actor) return text(401, "Missing or unknown key.", true);
-	if (!allows(actor, repoName, writing)) return text(403, refusal(repoName, writing));
+	const grant = actor ? null : await grantByToken(env.DB, key);
+	const caller = actor ?? grant?.actor ?? null;
+	if (!caller) return text(401, "Missing or unknown key.", true);
+	if (grant && (grant.repoName !== repoName || (writing && !grant.canWrite))) {
+		return text(403, refusal(repoName, writing));
+	}
+	if (!allows(caller, repoName, writing)) return text(403, refusal(repoName, writing));
 
-	// The earlier workspace and the review workspace can each hold a copy of
-	// the same name. The route keeps the earlier workspace for names that
-	// exist there, and uses the review workspace for copies that exist only
-	// there. The review library itself is written from the screen, because
-	// both workspaces have a repo named library.
-	const repo =
-		(await getRepo(env.WORKSPACE, repoName)) ??
-		(env.REVIEW === env.WORKSPACE ? null : await getRepo(env.REVIEW, repoName));
+	const repo = await getRepo(env.WORKSPACE, repoName);
 	if (!repo) return text(404, "That copy does not exist.");
 
 	// Bearer takes the full token string the control plane returned, including
@@ -194,7 +193,7 @@ export async function handleGit(request: Request, env: Env): Promise<Response> {
 	const bytes = new Uint8Array(await upstream.arrayBuffer());
 	if (upstream.status === 200 && gitBody) {
 		const accepted = acceptedUpdates(bytes, commands);
-		if (accepted.length > 0) await remember(env, repoName, actor, accepted);
+		if (accepted.length > 0) await remember(env, repoName, caller, accepted);
 	}
 	return new Response(bytes, { status: upstream.status, headers: outHeaders });
 }

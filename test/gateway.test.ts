@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -147,7 +147,6 @@ describe("stock git through the route", () => {
 		});
 		env = {
 			WORKSPACE: workspace.binding,
-			REVIEW: workspace.binding,
 			DEMO_KEY: "secret",
 			DB: db,
 			SUGGESTIONS: { async create() { throw new Error("not used"); } } as unknown as Workflow,
@@ -297,6 +296,81 @@ describe("stock git through the route", () => {
 		expect(unseen.unseen.some((item) => item.editionId === bypass.edition)).toBe(true);
 		expect(unseen.gateway.some((item) => item.editionId === bypass.edition)).toBe(false);
 	}, 60_000);
+
+	it("clones the library with a read credential and refuses a push", async () => {
+		const issued = await fetch(`${origin}/git/access`, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${PERSON_KEY}`, "Content-Type": "application/json" },
+			body: JSON.stringify({ name: LIBRARY, write: false }),
+		});
+		expect(issued.status).toBe(200);
+		const body = (await issued.json()) as { remote: string; token: string; write: boolean; username: string };
+		expect(body.write).toBe(false);
+		expect(body.username).toBe("stylebook");
+		expect(body.remote).toBe(`${origin}/git/${LIBRARY}.git`);
+		expect(body.token.startsWith("sbr_")).toBe(true);
+		expect(JSON.stringify(body)).not.toContain("art_v1_");
+		const dir = mkdtempSync(join(tmpdir(), "stylebook-read-"));
+		await run("git", ["clone", remote(LIBRARY, body.token), dir], { env: gitEnv });
+		expect(readFileSync(join(dir, STARTER_SKILL_PATH), "utf8")).toContain("Interview to draft");
+		await git(dir, ["config", "user.name", "Editor"]);
+		await git(dir, ["config", "user.email", "person@stylebook.invalid"]);
+		await run("sh", ["-c", `printf '\\nnope\\n' >> ${JSON.stringify(join(dir, STARTER_SKILL_PATH))}`]);
+		await git(dir, ["add", STARTER_SKILL_PATH]);
+		await git(dir, ["commit", "-m", "Try to publish"]);
+		await expectGitFailureArgs(["-C", dir, "push", "origin", "HEAD:main"], "cannot change the library");
+	}, 30_000);
+
+	it("speaks MCP: read a page, suggest a change, list it", async () => {
+		const headers = {
+			Authorization: `Bearer ${CURSOR_KEY}`,
+			"Content-Type": "application/json",
+			Accept: "application/json, text/event-stream",
+		};
+		const call = (method: string, params: unknown, key = true) =>
+			fetch(`${origin}/mcp`, {
+				method: "POST",
+				headers: key ? headers : { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+				body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+			});
+		const init = await call("initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "test", version: "0" } }, false);
+		expect(init.status).toBe(200);
+		const initBody = (await init.json()) as { result: { protocolVersion: string; serverInfo: { name: string } } };
+		expect(initBody.result.protocolVersion).toBe("2025-03-26");
+		expect(initBody.result.serverInfo.name).toBe("stylebook");
+
+		const listed = await call("tools/list", {});
+		const tools = (await listed.json()) as { result: { tools: { name: string }[] } };
+		expect(tools.result.tools.map((tool) => tool.name).sort()).toEqual([
+			"list_library",
+			"list_suggestions",
+			"read_item",
+			"suggest_change",
+		]);
+
+		const read = await call("tools/call", { name: "read_item", arguments: { path: STARTER_SKILL_PATH } });
+		const readBody = (await read.json()) as { result: { content: { text: string }[]; isError: boolean } };
+		expect(readBody.result.isError).toBe(false);
+		expect(readBody.result.content[0]?.text).toContain("Interview to draft");
+
+		const suggested = await call("tools/call", {
+			name: "suggest_change",
+			arguments: {
+				path: STARTER_SKILL_PATH,
+				content: `${STARTER_SKILL}\n\nA suggested closing line.\n`,
+				why: "Add a closing line.",
+				session: "mcp1",
+			},
+		});
+		const suggestedBody = (await suggested.json()) as { result: { content: { text: string }[]; isError: boolean } };
+		expect(suggestedBody.result.isError, suggestedBody.result.content[0]?.text).toBe(false);
+		expect(suggestedBody.result.content[0]?.text).toContain("sug-cursor-mcp1");
+
+		const open = await call("tools/call", { name: "list_suggestions", arguments: { path: STARTER_SKILL_PATH } });
+		const openBody = (await open.json()) as { result: { content: { text: string }[] } };
+		expect(openBody.result.content[0]?.text).toContain("sug-cursor-mcp1");
+		expect(openBody.result.content[0]?.text).toContain("Add a closing line.");
+	}, 30_000);
 });
 
 async function expectGitFailure(url: string, message: string) {

@@ -16,25 +16,10 @@ export interface Who {
 	note: EditionNote | null;
 }
 
-async function reposNamed(env: Env, repoName: string): Promise<ArtifactsRepo[]> {
-	const found: ArtifactsRepo[] = [];
-	const primary = await getRepo(env.WORKSPACE, repoName);
-	if (primary) found.push(primary);
-	if (env.REVIEW !== env.WORKSPACE) {
-		const review = await getRepo(env.REVIEW, repoName);
-		if (review) found.push(review);
-	}
-	return found;
-}
-
 async function noteText(env: Env, repoName: string, edition: string): Promise<string | null> {
-	const repos = await reposNamed(env, repoName);
-	if (repos.length === 0) return null;
-	for (const repo of repos) {
-		const text = await noteOnRepo(env, repo, repoName, edition);
-		if (text) return text;
-	}
-	return null;
+	const repo = await getRepo(env.WORKSPACE, repoName);
+	if (!repo) return null;
+	return noteOnRepo(env, repo, repoName, edition);
 }
 
 async function noteOnRepo(env: Env, repo: ArtifactsRepo, repoName: string, edition: string): Promise<string | null> {

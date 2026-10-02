@@ -189,6 +189,7 @@ export function renderDesk(desk: Desk, suggestion: string | null): string {
         <p class="meta">${countLabel}</p>
         ${overlap}
         ${cards}
+        ${desk.more ? `<p class="meta"><a href="${esc(desk.more)}">Older suggestions</a></p>` : ""}
       </aside>
     </div>`,
 	});
@@ -378,7 +379,8 @@ export async function handleScreen(request: Request, env: Env): Promise<Response
 			const item = cleanPath(url.searchParams.get("item"));
 			const suggestion = cleanName(url.searchParams.get("suggestion"));
 			const notice = url.searchParams.get("notice");
-			const desk = await loadDesk(env, signed.actor, signed.key, url.origin, item, suggestion, notice);
+			const before = url.searchParams.get("before");
+			const desk = await loadDesk(env, signed.actor, signed.key, url.origin, item, suggestion, notice, before);
 			return html(renderDesk(desk, suggestion));
 		}
 

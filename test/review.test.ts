@@ -4,6 +4,8 @@ import { changedSections, combineChanges, merge3, sameLinesConflict } from "../s
 import type { Env } from "../src/env";
 import worker from "../src/index";
 import { STARTER_SKILL, STARTER_SKILL_PATH } from "../src/seed";
+import { recordPush } from "../src/audit";
+import { SUGGESTION_READS } from "../src/review";
 import { LIBRARY, readBytes } from "../src/workspace";
 import { FakeWorkspace } from "./fake-artifacts";
 import { memoryD1 } from "./memory-d1";
@@ -65,15 +67,13 @@ describe("compare and combine", () => {
 
 describe("review screen", () => {
 	let workspace: FakeWorkspace;
-	let earlier: FakeWorkspace;
 	let db: D1Database;
 	let origin = "";
 	let close: () => Promise<void> = async () => {};
 	let cookie = "";
 
 	const env = (): Env => ({
-		WORKSPACE: earlier.binding,
-		REVIEW: workspace.binding,
+		WORKSPACE: workspace.binding,
 		DEMO_KEY: "secret",
 		DB: db,
 		SUGGESTIONS: {} as Env["SUGGESTIONS"],
@@ -82,8 +82,6 @@ describe("review screen", () => {
 
 	beforeAll(async () => {
 		workspace = await FakeWorkspace.start();
-		earlier = await FakeWorkspace.start();
-		await earlier.binding.create(LIBRARY, { description: "Earlier library" });
 		db = memoryD1();
 		await registerActor(db, { id: "reviewer", kind: "person", name: "Editor", key: PERSON_KEY });
 		await registerActor(db, {
@@ -102,7 +100,6 @@ describe("review screen", () => {
 	afterAll(async () => {
 		await close();
 		await workspace.stop();
-		await earlier.stop();
 	});
 
 	async function post(path: string, body: string, headers: Record<string, string> = {}) {
@@ -153,7 +150,6 @@ describe("review screen", () => {
 		expect(html).toContain("Edition 1");
 		const file = await readBytes(await workspace.binding.get(LIBRARY), STARTER_SKILL_PATH);
 		expect(new TextDecoder().decode(file!)).toBe(STARTER_SKILL);
-		expect(await readBytes(await earlier.binding.get(LIBRARY), STARTER_SKILL_PATH)).toBeNull();
 	}, 60_000);
 
 	it("flags an overlap, refuses a messy publish, and offers three ways out", async () => {
@@ -341,5 +337,30 @@ describe("review screen", () => {
 			body: `item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=sug-pencil-001`,
 		});
 		expect(denied.status).toBe(403);
+	});
+
+	it("reads a page of copies instead of every copy", async () => {
+		const editor = { id: "reviewer", kind: "person" as const, name: "Editor", ownerId: null, model: null };
+		for (let index = 0; index < 40; index++) {
+			await recordPush(db, {
+				repoName: `sug-reviewer-old${index}`,
+				refName: "refs/heads/main",
+				editionId: index.toString(16).padStart(40, "a"),
+				actor: editor,
+				owner: editor,
+				acceptedAt: `2020-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+			});
+		}
+		workspace.gets = [];
+		const response = await fetch(`${origin}/?item=${encodeURIComponent(STARTER_SKILL_PATH)}`, {
+			headers: { Cookie: cookie },
+		});
+		expect(response.status).toBe(200);
+		const html = await response.text();
+		assertClean(html);
+		const names = new Set(workspace.gets.filter((name) => name.startsWith("sug-")));
+		expect(names.size).toBeLessThanOrEqual(SUGGESTION_READS + 1);
+		expect(names.size).toBeLessThan(40);
+		expect(html).toContain("Older suggestions");
 	});
 });
