@@ -44,6 +44,15 @@ export interface TracerResult {
 		identical: boolean;
 		preview: string;
 	};
+	/**
+	 * What the live binding did while making the copy. Null when this call
+	 * reused a copy and did not call fork().
+	 */
+	afterFork: {
+		codes: string[];
+		attempts: number;
+		elapsedMs: number;
+	} | null;
 	note: string | null;
 }
 
@@ -148,6 +157,7 @@ export async function runTracer(
 			identical,
 			preview: new TextDecoder().decode(suggestionBytes).slice(0, 240),
 		},
+		afterFork: suggestion.afterFork ?? null,
 		note,
 	};
 }

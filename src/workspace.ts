@@ -44,24 +44,47 @@ export interface WaitOptions {
 	delayMs?: number;
 }
 
+/** What get() did while a repo was not ready yet. */
+export interface GetReport {
+	/** Error codes get() threw before it returned a handle, in order. */
+	codes: string[];
+	attempts: number;
+	elapsedMs: number;
+}
+
 /**
  * Get a repo handle. Returns null if the repo does not exist. Retries while
  * the service reports the repo as still being created or forked.
+ * https://developers.cloudflare.com/artifacts/api/workers-binding/
  */
 export async function getRepo(
 	workspace: Artifacts,
 	name: string,
 	wait: WaitOptions = {},
+	report?: GetReport,
 ): Promise<ArtifactsRepo | null> {
 	const attempts = wait.attempts ?? 20;
 	const delayMs = wait.delayMs ?? 250;
+	const started = Date.now();
 
 	for (let attempt = 1; ; attempt++) {
 		try {
-			return await workspace.get(name);
+			const repo = await workspace.get(name);
+			if (report) {
+				report.attempts = attempt;
+				report.elapsedMs = Date.now() - started;
+			}
+			return repo;
 		} catch (error) {
 			const code = errorCode(error);
-			if (code === "NOT_FOUND") return null;
+			if (report && code) report.codes.push(code);
+			if (code === "NOT_FOUND") {
+				if (report) {
+					report.attempts = attempt;
+					report.elapsedMs = Date.now() - started;
+				}
+				return null;
+			}
 			if (code && NOT_READY.has(code) && attempt < attempts) {
 				await new Promise((resolve) => setTimeout(resolve, delayMs));
 				continue;
@@ -127,6 +150,11 @@ export interface SuggestionCopy {
 	name: string;
 	/** False when a copy with this name already existed and was reused. */
 	created: boolean;
+	/**
+	 * What get() did after fork() returned. Absent when the copy already
+	 * existed and fork() was not called.
+	 */
+	afterFork?: GetReport;
 }
 
 /** Make a suggestion copy of the library for one actor's one session. */
@@ -150,9 +178,12 @@ export async function ensureSuggestion(
 		created = false;
 	}
 
-	const repo = await getRepo(workspace, name, wait);
+	// The binding documents that get() throws FORK_IN_PROGRESS while a copy is
+	// still being made. Time that window from the moment fork() returns.
+	const afterFork: GetReport = { codes: [], attempts: 0, elapsedMs: 0 };
+	const repo = await getRepo(workspace, name, wait, afterFork);
 	if (!repo) throw new Error(`The suggestion copy ${name} could not be created`);
-	return { repo, name, created };
+	return { repo, name, created, afterFork };
 }
 
 /** Read one file's bytes at a branch, tag or edition ID. Null if it is not there. */

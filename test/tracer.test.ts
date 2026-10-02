@@ -50,6 +50,7 @@ describe("tracer 1", () => {
 
 		expect(result.readBack.identical).toBe(true);
 		expect(result.readBack.librarySha256).toBe(result.readBack.suggestionSha256);
+		expect(result.afterFork).toEqual({ codes: [], attempts: 1, elapsedMs: expect.any(Number) });
 		expect(result.note).toBeNull();
 
 		// Check against Git itself, not only against our own reader.
@@ -74,6 +75,7 @@ describe("tracer 1", () => {
 			result.library.editions.map((edition) => edition.id),
 		);
 		expect(result.readBack.identical).toBe(true);
+		expect(result.afterFork?.codes).toEqual([]);
 		expect(result.readBack.preview).toContain("interview-to-draft");
 		expect(workspace.git(LIBRARY, "show", `main:${STARTER_SKILL_PATH}`)).toContain(
 			"- Edition 2: revision note added by the demo.",
@@ -91,6 +93,7 @@ describe("tracer 1", () => {
 
 		expect(workspace.forkCalls.length).toBe(forksBefore);
 		expect(result.suggestion.created).toBe(false);
+		expect(result.afterFork).toBeNull();
 		expect(result.library.publishedEdition).toBeNull();
 		expect(result.suggestion.editions).toHaveLength(1);
 		expect(result.readBack.identical).toBe(false);
@@ -106,6 +109,7 @@ describe("tracer 1", () => {
 				wait: WAIT,
 			});
 			expect(result.suggestion.created).toBe(true);
+			expect(result.afterFork?.codes).toEqual(["FORK_IN_PROGRESS", "FORK_IN_PROGRESS"]);
 			expect(result.readBack.identical).toBe(true);
 		} finally {
 			workspace.forkDelayCalls = 0;
