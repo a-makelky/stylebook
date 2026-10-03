@@ -1,6 +1,7 @@
 // The service-admin page. It counts workspaces. It does not read a library,
 // a suggestion, or anyone's name or email address.
 
+import { hashKey } from "./actors";
 import type { Env } from "./env";
 import { formatUsd, operationsCostUsd } from "./cost";
 import { verifiedEmail, type AccessRuntime } from "./identity";
@@ -59,7 +60,6 @@ function html(body: string, status = 200): Response {
 
 interface WorkspaceLine {
 	id: string;
-	name: string;
 	createdAt: string;
 	suspended: number;
 	people: number;
@@ -74,7 +74,7 @@ interface WorkspaceLine {
 async function lines(env: Env): Promise<WorkspaceLine[]> {
 	const month = monthKey();
 	const rows = await env.DB.prepare(
-		`SELECT w.id, w.name, w.created_at, w.suspended, w.limit_people, w.limit_agents, w.limit_suggestions,
+		`SELECT w.id, w.created_at, w.suspended, w.limit_people, w.limit_agents, w.limit_suggestions,
         (SELECT COUNT(*) FROM actors a WHERE a.workspace_id = w.id AND a.kind = 'person' AND a.removed_at IS NULL) AS people,
         (SELECT COUNT(*) FROM actors a WHERE a.workspace_id = w.id AND a.kind = 'agent' AND a.removed_at IS NULL) AS agents,
         (SELECT COUNT(DISTINCT repo_name) FROM gateway_pushes g
@@ -86,7 +86,6 @@ async function lines(env: Env): Promise<WorkspaceLine[]> {
 		.bind()
 		.all<{
 			id: string;
-			name: string;
 			created_at: string;
 			suspended: number;
 			people: number;
@@ -100,7 +99,6 @@ async function lines(env: Env): Promise<WorkspaceLine[]> {
 	for (const row of rows.results ?? []) {
 		found.push({
 			id: row.id,
-			name: row.name,
 			createdAt: row.created_at,
 			suspended: row.suspended,
 			people: row.people,
@@ -115,9 +113,11 @@ async function lines(env: Env): Promise<WorkspaceLine[]> {
 	return found;
 }
 
-async function audit(env: Env, action: string, workspaceId: string, detail: string): Promise<void> {
-	await env.DB.prepare(`INSERT INTO service_audit (at, action, workspace_id, detail) VALUES (?1, ?2, ?3, ?4)`)
-		.bind(new Date().toISOString(), action, workspaceId, detail)
+async function audit(env: Env, email: string, action: string, workspaceId: string, detail: string): Promise<void> {
+	await env.DB.prepare(
+		`INSERT INTO service_audit (at, action, workspace_id, detail, actor_hash) VALUES (?1, ?2, ?3, ?4, ?5)`,
+	)
+		.bind(new Date().toISOString(), action, workspaceId, detail, await hashKey(email))
 		.run();
 }
 
@@ -137,9 +137,9 @@ export async function handleAdmin(request: Request, env: Env, runtime?: AccessRu
 	if (request.method === "POST") {
 		const form = new URLSearchParams(await request.text());
 		const id = form.get("workspace") ?? "";
-		const workspace = await env.DB.prepare(`SELECT id, name FROM workspaces WHERE id = ?1 AND deleted_at IS NULL`)
+		const workspace = await env.DB.prepare(`SELECT id FROM workspaces WHERE id = ?1 AND deleted_at IS NULL`)
 			.bind(id)
-			.first<{ id: string; name: string }>();
+			.first<{ id: string }>();
 		if (!workspace) return html(page(`<h1>That workspace is not here.</h1>`), 404);
 		const action = form.get("action") ?? "";
 		if (action === "limits") {
@@ -154,14 +154,14 @@ export async function handleAdmin(request: Request, env: Env, runtime?: AccessRu
 			)
 				.bind(people, agents, suggestions, id)
 				.run();
-			await audit(env, "limits", id, "Changed the limits.");
+			await audit(env, email, "limits", id, "Changed the limits.");
 		} else if (action === "suspend") {
 			const next = form.get("suspended") === "yes" ? 0 : 1;
 			await env.DB.prepare(`UPDATE workspaces SET suspended = ?1 WHERE id = ?2`).bind(next, id).run();
-			await audit(env, next === 1 ? "suspend" : "resume", id, next === 1 ? "Suspended the workspace." : "Allowed changes again.");
+			await audit(env, email, next === 1 ? "suspend" : "resume", id, next === 1 ? "Suspended the workspace." : "Allowed changes again.");
 		} else if (action === "delete") {
-			if ((form.get("name") ?? "") !== workspace.name) {
-				return html(page(`<p class="warn">Type the workspace name to delete it.</p>`), 400);
+			if ((form.get("confirm") ?? "") !== workspace.id) {
+				return html(page(`<p class="warn">Type the workspace id to delete it.</p>`), 400);
 			}
 			await deleteWorkspaceRepos(env.WORKSPACE, id);
 			const now = new Date().toISOString();
@@ -172,7 +172,7 @@ export async function handleAdmin(request: Request, env: Env, runtime?: AccessRu
 			}
 			await env.DB.prepare(`UPDATE actors SET removed_at = ?1 WHERE workspace_id = ?2 AND removed_at IS NULL`).bind(now, id).run();
 			await env.DB.prepare(`UPDATE workspaces SET deleted_at = ?1 WHERE id = ?2`).bind(now, id).run();
-			await audit(env, "delete", id, "Deleted the workspace.");
+			await audit(env, email, "delete", id, "Deleted the workspace.");
 		} else {
 			return html(page(`<h1>That action is not available.</h1>`), 400);
 		}
@@ -199,7 +199,7 @@ export async function handleAdmin(request: Request, env: Env, runtime?: AccessRu
 				timeZone: "UTC",
 			});
 			return `<section class="workspace">
-        <h2>${esc(item.name)}</h2>
+        <h2>${esc(item.id)}</h2>
         <p class="meta">Created ${esc(when)}. ${item.people} ${item.people === 1 ? "person" : "people"}. ${item.agents} ${item.agents === 1 ? "agent" : "agents"}. ${item.suggestions} open ${item.suggestions === 1 ? "suggestion" : "suggestions"}.</p>
         <p class="meta">${item.operations} operations this month. Estimated cost ${esc(formatUsd(share))}.</p>
         ${item.suspended ? `<p class="warn">Read-only.</p>` : ""}
@@ -220,8 +220,8 @@ export async function handleAdmin(request: Request, env: Env, runtime?: AccessRu
         <form method="post" action="/admin">
           <input type="hidden" name="workspace" value="${esc(item.id)}">
           <input type="hidden" name="action" value="delete">
-          <label for="delete-${esc(item.id)}">Type the workspace name</label>
-          <input id="delete-${esc(item.id)}" name="name" autocomplete="off">
+          <label for="delete-${esc(item.id)}">Type the workspace id</label>
+          <input id="delete-${esc(item.id)}" name="confirm" autocomplete="off">
           <button class="text" type="submit">Delete</button>
         </form>
       </section>`;

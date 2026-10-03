@@ -26,6 +26,7 @@ This table is the honest state of the code, not a roadmap.
 | Pull the library with plain Git or over MCP | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-5.md). |
 | Workspaces, email sign-in, invites, and connecting an agent | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-teams.md). Email links stay in the code and are switched off. |
 | Sign in with Cloudflare Access, Admin and Member, People | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-access-roles.md). |
+| Suspension on suggestion writes, admin page, second workspace, People | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-tracer-8-review.md). |
 
 Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for a piece, treat that piece as unproven.
 

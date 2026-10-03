@@ -358,6 +358,54 @@ function page(parts: { main: string; account?: string }): string {
   .bar input { width: auto; flex: 1; min-width: 12rem; margin: 0; }
   pre { white-space: pre-wrap; font: inherit; font-size: 16px; line-height: 1.5; margin: 8px 0 16px; }
   .history { border-top: 1px solid var(--rule); margin-top: 32px; }
+  .sheet.people { max-width: 68rem; }
+  .person-row, .agent-row, .invite-row {
+    display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+    border-top: 1px solid var(--rule); padding: 12px 0;
+  }
+  .person-name, .agent-name { font-size: 17px; line-height: 1.5; }
+  .sheet .person-row form, .sheet .agent-row form, .sheet .invite-row form { margin: 0; }
+  .sheet .person-row select {
+    display: block; width: 100%; min-width: 0; margin: 0;
+  }
+  .sheet .invite-line {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: end;
+  }
+  .sheet .invite-line label {
+    display: flex; flex-direction: column; width: auto; flex: 1 1 12rem; margin: 0;
+  }
+  .sheet .invite-line input, .sheet .invite-line select { width: 100%; margin: 8px 0 0; }
+  .sheet .invite-line button { flex: 0 0 auto; }
+  .agent-actions { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center; }
+  .agent-actions details { margin: 0; }
+  .agent-actions summary {
+    cursor: pointer; text-decoration: underline; min-height: 44px;
+    display: inline-flex; align-items: center; list-style: none;
+  }
+  .agent-actions summary::-webkit-details-marker { display: none; }
+  .agent-actions summary::marker { content: ""; }
+  .sheet .rename-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0; }
+  .sheet .rename-form label { width: auto; margin: 0; }
+  .sheet .rename-form input { width: auto; flex: 1 1 10rem; margin: 0; }
+  .sheet label.check {
+    display: flex; flex-direction: row; align-items: center; justify-content: flex-start;
+    gap: 8px; width: auto; margin: 0 0 8px;
+  }
+  .sheet label.check input { width: auto; min-height: 0; margin: 0; flex: 0 0 auto; }
+  .delete-workspace { border-top: 1px solid var(--rule); margin-top: 32px; padding-top: 8px; color: var(--red); }
+  .delete-workspace h2, .delete-workspace p, .delete-workspace label, .delete-workspace button { color: var(--red); }
+  @media (min-width: 641px) {
+    .person-row, .agent-row, .invite-row { flex-direction: row; align-items: center; gap: 16px; }
+    .person-row .person-name { flex: 1 1 8rem; }
+    .person-row .email { flex: 1.4 1 12rem; }
+    .person-row .joined, .agent-row .used { flex: 0 0 auto; }
+    .person-row .remove, .agent-row .agent-actions, .invite-row form { margin-left: auto; }
+    .sheet .person-row select { width: auto; min-width: 8rem; }
+  }
+  @media (max-width: 640px) {
+    .sheet .invite-line { flex-direction: column; align-items: stretch; }
+    .sheet .invite-line label, .sheet .invite-line button { width: 100%; flex-basis: auto; }
+  }
   @media (max-width: 1099px) {
     header { padding-left: 16px; padding-right: 16px; }
     header:has(.top) { padding-left: 0; padding-right: 0; }
@@ -456,6 +504,16 @@ interface PeopleAgent {
 	yours: boolean;
 }
 
+function roleSentence(name: string, role: "admin" | "member"): string {
+	return `${name} is now ${role === "admin" ? "an Admin" : "a Member"}.`;
+}
+
+function lastUsedLabel(iso: string | null): string {
+	if (!iso) return "Not used yet";
+	const when = plainWhen(iso);
+	return when === "Not used yet" ? when : `Last used ${when}`;
+}
+
 function renderPeople(
 	workspaceName: string,
 	people: PeoplePerson[],
@@ -477,32 +535,30 @@ function renderPeople(
 	const personRows = people
 		.map((person) => {
 			const role = person.starter
-				? `<span class="meta">Started this workspace</span>`
+				? `<span class="role">Started this workspace</span>`
 				: admin
-					? `<form method="post" action="/people/role">${hidden("id", person.id)}
-              <label for="role-${esc(person.id)}">Role</label>
-              <select id="role-${esc(person.id)}" name="role">
-                <option value="member"${person.role === "member" ? " selected" : ""}>Member</option>
-                <option value="admin"${person.role === "admin" ? " selected" : ""}>Admin</option>
-              </select>
-              <button class="secondary" type="submit">Change role</button>
-            </form>`
-					: `<span class="meta">${person.role === "admin" ? "Admin" : "Member"}</span>`;
+					? `<form method="post" action="/people/role">${hidden("id", person.id)}<select name="role" aria-label="Role for ${esc(person.name)}" onchange="this.form.requestSubmit()">
+              <option value="member"${person.role === "member" ? " selected" : ""}>Member</option>
+              <option value="admin"${person.role === "admin" ? " selected" : ""}>Admin</option>
+            </select></form>`
+					: `<span class="role">${person.role === "admin" ? "Admin" : "Member"}</span>`;
 			const remove =
 				admin && !person.starter
-					? `<form method="post" action="/people/remove">${hidden("id", person.id)}<button class="text" type="submit">Remove</button></form>`
+					? `<span class="remove"><form method="post" action="/people/remove">${hidden("id", person.id)}<button class="text" type="submit">Remove</button></form></span>`
 					: "";
-			return `<div class="person">
-        <p>${esc(person.name)}${person.you ? " (you)" : ""} <span class="meta">${esc(person.email)}</span></p>
-        <p class="meta">Joined ${esc(plainWhen(person.joined))}${person.agents ? `. ${esc(person.agents)}` : ""}</p>
+			return `<div class="person-row">
+        <span class="person-name">${esc(person.name)}${person.you ? " (you)" : ""}</span>
+        <span class="meta email">${esc(person.email)}</span>
         ${role}
+        <span class="meta joined">Joined ${esc(plainWhen(person.joined))}</span>
         ${remove}
       </div>`;
 		})
 		.join("");
 	const inviteRows = invites
 		.map(
-			(invite) => `<div class="person bar"><span>${esc(invite.email)} <span class="meta">${invite.role === "admin" ? "Admin" : "Member"}</span></span>
+			(invite) => `<div class="invite-row"><span>${esc(invite.email)}</span>
+        <span class="meta">${invite.role === "admin" ? "Admin" : "Member"}</span>
         ${
 					admin
 						? `<form method="post" action="/invitations/cancel">${hidden("id", invite.id)}<button class="text" type="submit">Cancel</button></form>`
@@ -513,55 +569,64 @@ function renderPeople(
 	const agentRows = agents
 		.map((agent) => {
 			const rename = agent.yours
-				? `<form method="post" action="/agents/rename" class="bar">${hidden("id", agent.id)}
-          <label for="rename-${esc(agent.id)}">Name</label>
-          <input id="rename-${esc(agent.id)}" name="name" value="${esc(agent.name)}" required>
-          <button class="secondary" type="submit">Rename</button>
-        </form>
-        <form method="post" action="/agents/key">${hidden("id", agent.id)}<button class="text" type="submit">Make a new key</button></form>`
+				? `<details class="rename"><summary>Rename</summary>
+            <form method="post" action="/agents/rename" class="rename-form">${hidden("id", agent.id)}
+              <label for="rename-${esc(agent.id)}">Name</label>
+              <input id="rename-${esc(agent.id)}" name="name" value="${esc(agent.name)}" required>
+              <button class="text" type="submit">Save</button>
+            </form>
+          </details>
+          <form method="post" action="/agents/key">${hidden("id", agent.id)}<button class="text" type="submit">New key</button></form>`
 				: "";
 			const revoke =
 				admin || agent.yours
 					? `<form method="post" action="/agents/revoke">${hidden("id", agent.id)}<button class="text" type="submit">Revoke</button></form>`
 					: "";
-			return `<div class="agent">
-        <p>${esc(agent.name)} <span class="meta">${esc(agent.tool)}, ${esc(agent.person)}, ${esc(plainWhen(agent.lastUsed))}</span></p>
-        ${rename}
-        ${revoke}
+			return `<div class="agent-row">
+        <span class="agent-name">${esc(agent.name)}</span>
+        <span>${esc(agent.tool)}</span>
+        <span class="meta">${esc(agent.person)}</span>
+        <span class="meta used">${esc(lastUsedLabel(agent.lastUsed))}</span>
+        <span class="agent-actions">${rename}${revoke}</span>
       </div>`;
 		})
 		.join("");
 	const invite = admin
 		? `<h2>Invite</h2>
-      <form method="post" action="/invite">
-        <label for="invite-email">Email</label>
-        <input id="invite-email" name="email" type="email" autocomplete="email" required>
-        <label for="invite-role">Role</label>
-        <select id="invite-role" name="role">
-          <option value="member" selected>Member</option>
-          <option value="admin">Admin</option>
-        </select>
+      <form method="post" action="/invite" class="invite-line">
+        <label for="invite-email">Email
+          <input id="invite-email" name="email" type="email" autocomplete="email" required>
+        </label>
+        <label for="invite-role">Role
+          <select id="invite-role" name="role">
+            <option value="member" selected>Member</option>
+            <option value="admin">Admin</option>
+          </select>
+        </label>
         <button class="primary" type="submit">${links ? "Send an invite" : "Invite"}</button>
       </form>
-      ${inviteRows ? `<h2>Waiting to join</h2>${inviteRows}` : ""}`
+      ${inviteRows ? `<p class="meta">Waiting to join</p>${inviteRows}` : ""}`
 		: "";
 	const settings = admin
 		? `<h2>Settings</h2>
       <form method="post" action="/settings">
         <label for="workspace-name">Workspace name</label>
         <input id="workspace-name" name="name" value="${esc(workspaceName)}" required>
-        <label class="check"><input type="checkbox" name="members_can_publish" value="yes"${membersCanPublish ? " checked" : ""}> Members can publish</label>
+        <label class="check" for="members-can-publish"><input id="members-can-publish" type="checkbox" name="members_can_publish" value="yes"${membersCanPublish ? " checked" : ""}> Members can publish</label>
         <p class="meta">When this is off, members suggest and an Admin publishes.</p>
         <button class="secondary" type="submit">Save</button>
       </form>`
 		: "";
 	const deletion = starter
-		? `<h2>Delete this workspace</h2>
+		? `<section class="delete-workspace">
+      <h2>Delete this workspace</h2>
+      <p>This removes the library, every suggestion, and everyone in the workspace.</p>
       <form method="post" action="/workspace/delete">
         <label for="delete-name">Type the workspace name</label>
         <input id="delete-name" name="name" autocomplete="off" required>
         <button class="text" type="submit">Delete</button>
-      </form>`
+      </form>
+    </section>`
 		: "";
 	const connect = `<h2>Connect an agent</h2>
       <form method="post" action="/agents">
@@ -577,15 +642,15 @@ function renderPeople(
       </form>`;
 	return page({
 		account: accountLine(workspaceName),
-		main: `<div class="sheet">
+		main: `<div class="sheet people">
       <p class="meta"><a href="/">Library</a></p>
       <h1>People</h1>
       <p class="meta">${esc(workspaceName)}</p>
       ${note}
       ${shown}
-      ${invite}
       <h2>Everyone in the workspace</h2>
       ${personRows || `<p class="meta">Just you, so far.</p>`}
+      ${invite}
       <h2>Agents</h2>
       ${agentRows || `<p class="meta">No agents yet.</p>`}
       ${connect}
@@ -633,15 +698,26 @@ async function confirmLabel(env: Env, link: { purpose: string; email: string; wo
 	return null;
 }
 
-function renderChoose(workspaces: { id: string; name: string }[]): string {
+function renderChoose(
+	workspaces: { id: string; name: string }[],
+	invites: { workspaceId: string; workspaceName: string }[] = [],
+	message: string | null = null,
+): string {
+	const note = message ? `<p class="overlap">${esc(message)}</p>` : "";
 	const options = workspaces
 		.map(
 			(workspace) => `<form method="post" action="/choose">${hidden("workspace", workspace.id)}
         <button class="secondary" type="submit">Open ${esc(workspace.name)}</button></form>`,
 		)
 		.join("");
+	const joins = invites
+		.map(
+			(invite) => `<form method="post" action="/join">${hidden("workspace", invite.workspaceId)}
+        <button class="secondary" type="submit">Join ${esc(invite.workspaceName)}</button></form>`,
+		)
+		.join("");
 	return page({
-		main: `<div class="sheet"><h1>Open a workspace</h1>${options}</div>`,
+		main: `<div class="sheet"><h1>Open a workspace</h1>${note}${options}${joins}</div>`,
 	});
 }
 
@@ -790,7 +866,8 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 			const pending = await peekLink(env, secret);
 			if (!pending) return html(renderGate("That link has expired or was already used."), 400);
 			const homes = await memberships(env.DB, pending.email);
-			return html(renderChoose(homes.map((item) => item.workspace)));
+			const invites = await pendingInvitations(env.DB, pending.email);
+			return html(renderChoose(homes.map((item) => item.workspace), inviteChoices(invites)));
 		}
 
 		if (request.method === "POST" && path === "/sign-out") {
@@ -810,14 +887,25 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 			return enterFromAccess(request, env, ctx as AccessRuntime | undefined);
 		}
 
-		if (request.method === "POST" && path === "/join" && signInMode(env) === "access") {
-			const seen = await seenEmail(request, env);
-			if (!seen) return html(renderAccessGate(), 401);
+		if (request.method === "POST" && path === "/join") {
+			const held = await heldEmail(request, env);
+			if (!held) {
+				if (signInMode(env) === "access") return html(renderAccessGate(), 401);
+				return html(renderGate("That link has expired or was already used."), 400);
+			}
 			const form = await fields(request);
-			const joined = await acceptInvitation(env, seen, form.get("workspace") ?? "");
-			if ("message" in joined) return html(renderArrived(joined.message), 400);
-			await takeLink(env, readCookie(request, SEEN_COOKIE) ?? "");
-			return redirectCookies("/", [keyCookie(joined.secret), clearSeenCookie()]);
+			const joined = await acceptInvitation(env, held.email, form.get("workspace") ?? "");
+			if ("message" in joined) {
+				if (held.purpose === "choose") {
+					const homes = await memberships(env.DB, held.email);
+					const invites = await pendingInvitations(env.DB, held.email);
+					return html(renderChoose(homes.map((item) => item.workspace), inviteChoices(invites), joined.message), 400);
+				}
+				const invites = await pendingInvitations(env.DB, held.email);
+				return html(renderArrived(joined.message, inviteChoices(invites)), 400);
+			}
+			await takeLink(env, held.secret);
+			return redirectCookies("/", [keyCookie(joined.secret), clearSeenCookie(), clearChooseCookie()]);
 		}
 
 		const signed = await actorFromRequest(request, env);
@@ -890,8 +978,11 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 
 		if (signed.actor.kind === "person" && request.method === "POST" && path === "/people/role") {
 			const form = await fields(request);
-			const problem = await changeRole(env, signed.actor, form.get("id") ?? "", form.get("role") === "admin" ? "admin" : "member");
-			return peoplePage(env, signed.actor, url.origin, problem ?? "Role saved.", null);
+			const personId = form.get("id") ?? "";
+			const role = form.get("role") === "admin" ? "admin" : "member";
+			const target = (await listActors(env.DB, signed.actor.workspaceId)).find((item) => item.id === personId);
+			const problem = await changeRole(env, signed.actor, personId, role);
+			return peoplePage(env, signed.actor, url.origin, problem ?? roleSentence(target?.name ?? "They", role), null);
 		}
 
 		if (signed.actor.kind === "person" && request.method === "POST" && path === "/settings") {
@@ -1130,21 +1221,44 @@ async function seenEmail(request: Request, env: Env): Promise<string | null> {
 	return pending.email;
 }
 
+function inviteChoices(invites: { workspaceId: string; workspaceName: string }[]): { workspaceId: string; workspaceName: string }[] {
+	return invites.map((item) => ({ workspaceId: item.workspaceId, workspaceName: item.workspaceName }));
+}
+
+async function heldEmail(
+	request: Request,
+	env: Env,
+): Promise<{ email: string; secret: string; purpose: "sign-in" | "choose" } | null> {
+	const seen = readCookie(request, SEEN_COOKIE);
+	if (seen) {
+		const pending = await peekLink(env, seen);
+		if (pending?.purpose === "sign-in") return { email: pending.email, secret: seen, purpose: "sign-in" };
+	}
+	const choose = readCookie(request, CHOOSE_COOKIE);
+	if (choose) {
+		const pending = await peekLink(env, choose);
+		if (pending?.purpose === "choose") return { email: pending.email, secret: choose, purpose: "choose" };
+	}
+	return null;
+}
+
 async function enterFromAccess(request: Request, env: Env, runtime?: AccessRuntime): Promise<Response> {
 	if (signInMode(env) !== "access") return redirect("/");
 	const email = await verifiedEmail(request, env, runtime);
 	if (!email) return html(renderAccessGate(), 401);
 	await recordSignIn(env.DB, email);
 	const homes = await memberships(env.DB, email);
-	if (homes.length === 1) {
-		const home = homes[0]!;
-	return redirectCookies("/", [keyCookie(await openSession(env.DB, home.actor)), clearSeenCookie()]);
-	}
-	if (homes.length > 1) {
-		const choice = await rememberLink(env, email, "choose");
-		return html(renderChoose(homes.map((item) => item.workspace)), 200, { "Set-Cookie": chooseCookie(choice) });
-	}
 	const invites = await pendingInvitations(env.DB, email);
+	if (homes.length === 1 && invites.length === 0) {
+		const home = homes[0]!;
+		return redirectCookies("/", [keyCookie(await openSession(env.DB, home.actor)), clearSeenCookie()]);
+	}
+	if (homes.length > 0) {
+		const choice = await rememberLink(env, email, "choose");
+		return html(renderChoose(homes.map((item) => item.workspace), inviteChoices(invites)), 200, {
+			"Set-Cookie": chooseCookie(choice),
+		});
+	}
 	const secret = await rememberLink(env, email, "sign-in");
-	return html(renderArrived(null, invites), 200, { "Set-Cookie": seenCookie(secret) });
+	return html(renderArrived(null, inviteChoices(invites)), 200, { "Set-Cookie": seenCookie(secret) });
 }

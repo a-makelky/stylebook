@@ -23,6 +23,11 @@ export function isLibraryName(repoName: string): boolean {
 	return /^[a-z][a-z0-9]{2,15}-library$/.test(repoName);
 }
 
+/** A suggestion copy, named `{workspace}-sug-…` in the same namespace as its library. */
+export function isSuggestionName(repoName: string): boolean {
+	return /^[a-z][a-z0-9]{2,15}-sug-/.test(repoName);
+}
+
 /** True when the repo is this team's library or one of its suggestion copies. */
 export function repoInWorkspace(workspaceId: string, repoName: string): boolean {
 	if (!WORKSPACE_ID.test(workspaceId)) return false;

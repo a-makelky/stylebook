@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { hashKey } from "../src/actors";
 import type { Env } from "../src/env";
 import { emailFromAccessJwt, signAccessJwt, signInMode, verifiedEmail } from "../src/identity";
 import { permit, type Action, type PermitInput } from "../src/permit";
@@ -209,6 +210,7 @@ describe("roles on the screen, the Git route, and MCP", () => {
 	let library = "";
 	let agentKey = "";
 	let memberId = "";
+	let suggestionCopy = "";
 
 	beforeAll(async () => {
 		const pair = keyPair(
@@ -394,14 +396,124 @@ describe("roles on the screen, the Git route, and MCP", () => {
 		starterCookie = cookie(returned, "stylebook");
 	});
 
+	it("rejects a state-changing post from another site", async () => {
+		const id = library.replace(/-library$/, "");
+		const adminHeaders = {
+			"Cf-Access-Jwt-Assertion": await jwt(SERVICE),
+			"Content-Type": "application/x-www-form-urlencoded",
+		};
+		const byOrigin = await fetch(`${origin}/admin`, {
+			method: "POST",
+			redirect: "manual",
+			headers: { ...adminHeaders, Origin: "https://evil.example" },
+			body: `workspace=${encodeURIComponent(id)}&action=delete&confirm=${encodeURIComponent(id)}`,
+		});
+		expect(byOrigin.status).toBe(403);
+		expect(await byOrigin.text()).toContain("That request came from another site.");
+		const bySite = await fetch(`${origin}/admin`, {
+			method: "POST",
+			redirect: "manual",
+			headers: { ...adminHeaders, "Sec-Fetch-Site": "cross-site" },
+			body: `workspace=${encodeURIComponent(id)}&action=suspend&suspended=no`,
+		});
+		expect(bySite.status).toBe(403);
+		expect(await bySite.text()).toContain("That request came from another site.");
+		const settings = await fetch(`${origin}/settings`, {
+			method: "POST",
+			headers: {
+				Cookie: starterCookie,
+				"Content-Type": "application/x-www-form-urlencoded",
+				Origin: "https://evil.example",
+			},
+			body: "name=Hijacked&members_can_publish=yes",
+		});
+		expect(settings.status).toBe(403);
+		expect(await settings.text()).toContain("That request came from another site.");
+		const otherSite = await fetch(`${origin}/invite`, {
+			method: "POST",
+			headers: {
+				Cookie: starterCookie,
+				"Content-Type": "application/x-www-form-urlencoded",
+				"Sec-Fetch-Site": "same-site",
+			},
+			body: "email=forged.north@stylebook.invalid&role=admin",
+		});
+		expect(otherSite.status).toBe(403);
+		const allowed = await fetch(`${origin}/invitations/cancel`, {
+			method: "POST",
+			headers: {
+				Cookie: starterCookie,
+				"Content-Type": "application/x-www-form-urlencoded",
+				Origin: origin,
+				"Sec-Fetch-Site": "same-origin",
+			},
+			body: "id=missing",
+		});
+		expect(allowed.status).toBe(200);
+		expect(await allowed.text()).toContain("That invitation is not waiting.");
+		const home = await (await fetch(`${origin}/`, { headers: { Cookie: starterCookie } })).text();
+		expect(home).toContain("Northwind");
+		expect(home).not.toContain("Hijacked");
+		const forged = await db
+			.prepare(`SELECT id FROM invitations WHERE email = ?1 AND cancelled_at IS NULL AND accepted_at IS NULL`)
+			.bind("forged.north@stylebook.invalid")
+			.first<{ id: string }>();
+		expect(forged).toBeNull();
+	});
+
+	it("lets a member join a second workspace and switch between both", async () => {
+		const straight = await enter(MEMBER);
+		expect(straight.status).toBe(303);
+		const host = "east.host@stylebook.invalid";
+		const arrived = await enter(host);
+		const seen = cookie(arrived, "stylebook_seen");
+		const started = await form("/start", "workspace=Eastwind", seen);
+		expect(started.status).toBe(303);
+		const hostCookie = cookie(started, "stylebook");
+		const invited = await form("/invite", `email=${encodeURIComponent(MEMBER)}&role=member`, hostCookie);
+		expect(await invited.text()).toContain("They will join when they sign in.");
+		const chooser = await enter(MEMBER);
+		expect(chooser.status).toBe(200);
+		const chooserHtml = await chooser.text();
+		expect(chooserHtml).toContain("Open Northwind");
+		expect(chooserHtml).toContain("Join Eastwind");
+		const eastId = chooserHtml.match(/action="\/join"><input type="hidden" name="workspace" value="([^"]+)"/)?.[1] ?? "";
+		expect(eastId).not.toBe("");
+		const joined = await form("/join", `workspace=${encodeURIComponent(eastId)}`, cookie(chooser, "stylebook_choose"));
+		expect(joined.status).toBe(303);
+		const eastCookie = cookie(joined, "stylebook");
+		const eastPeople = await (await fetch(`${origin}/people`, { headers: { Cookie: eastCookie } })).text();
+		expect(eastPeople).toContain("Eastwind");
+		expect(eastPeople).toContain(MEMBER);
+		const northId = library.replace(/-library$/, "");
+		const back = await enter(MEMBER);
+		const backHtml = await back.text();
+		expect(backHtml).toContain("Open Northwind");
+		expect(backHtml).toContain("Open Eastwind");
+		expect(backHtml).not.toContain("Join Eastwind");
+		const openedNorth = await form("/choose", `workspace=${encodeURIComponent(northId)}`, cookie(back, "stylebook_choose"));
+		expect(openedNorth.status).toBe(303);
+		const northPeople = await (await fetch(`${origin}/people`, { headers: { Cookie: cookie(openedNorth, "stylebook") } })).text();
+		expect(northPeople).toContain("Northwind");
+		expect(northPeople).not.toContain("Eastwind");
+		const again = await enter(MEMBER);
+		const openedEast = await form("/choose", `workspace=${encodeURIComponent(eastId)}`, cookie(again, "stylebook_choose"));
+		expect(openedEast.status).toBe(303);
+		const switched = await (await fetch(`${origin}/people`, { headers: { Cookie: cookie(openedEast, "stylebook") } })).text();
+		expect(switched).toContain("Eastwind");
+		expect(switched).not.toContain("Northwind");
+	});
+
 	it("enforces invite, role, remove, and the starter", async () => {
 		const people = await (await fetch(`${origin}/people`, { headers: { Cookie: starterCookie } })).text();
 		memberId = people.match(/action="\/people\/remove"><input type="hidden" name="id" value="([^"]+)"/)?.[1] ?? "";
 		expect(memberId).not.toBe("");
+		expect(people).toContain('onchange="this.form.requestSubmit()"');
+		expect(people).not.toContain("Change role");
 		const promoted = await form("/people/role", `id=${encodeURIComponent(memberId)}&role=admin`, starterCookie);
-		expect(await promoted.text()).toContain("Role saved.");
+		expect(await promoted.text()).toContain("Member North is now an Admin.");
 		const demoted = await form("/people/role", `id=${encodeURIComponent(memberId)}&role=member`, starterCookie);
-		expect(await demoted.text()).toContain("Role saved.");
+		expect(await demoted.text()).toContain("Member North is now a Member.");
 		expect(people).not.toMatch(/Started this workspace[\s\S]{0,200}Change role/);
 		const selfRow = await db.prepare(`SELECT id FROM actors WHERE email = ?1 AND removed_at IS NULL`).bind(STARTER).first<{ id: string }>();
 		const self = selfRow?.id ?? "";
@@ -439,6 +551,7 @@ describe("roles on the screen, the Git route, and MCP", () => {
 			session: "roles",
 		});
 		const copy = suggested.match(/Saved suggestion (\S+)/)?.[1] ?? "";
+		suggestionCopy = copy;
 		expect(copy).not.toBe("");
 
 		for (const name of ["publish", "decline", "combine", "invite"] as const) {
@@ -526,6 +639,46 @@ describe("roles on the screen, the Git route, and MCP", () => {
 		expect(memberPage).not.toContain("Lock this page");
 	});
 
+	it("refuses a suspended agent's write to its own suggestion", async () => {
+		expect(suggestionCopy).toContain("-sug-");
+		const id = library.replace(/-library$/, "");
+		const headers = {
+			"Cf-Access-Jwt-Assertion": await jwt(SERVICE),
+			"Content-Type": "application/x-www-form-urlencoded",
+		};
+		const suspend = await fetch(`${origin}/admin`, {
+			method: "POST",
+			redirect: "manual",
+			headers,
+			body: `workspace=${encodeURIComponent(id)}&action=suspend&suspended=no`,
+		});
+		expect(suspend.status).toBe(303);
+		const pushed = await fetch(`${origin}/git/${suggestionCopy}.git/git-receive-pack`, {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${agentKey}`,
+				"Content-Type": "application/x-git-receive-pack-request",
+			},
+			body: "0000",
+		});
+		expect(pushed.status).toBe(403);
+		expect(await pushed.text()).toContain("This workspace is read-only.");
+		const access = await fetch(`${origin}/git/access`, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${agentKey}`, "Content-Type": "application/json" },
+			body: JSON.stringify({ name: suggestionCopy, write: true }),
+		});
+		expect(access.status).toBe(403);
+		expect(await access.text()).toContain("This workspace is read-only.");
+		const resume = await fetch(`${origin}/admin`, {
+			method: "POST",
+			redirect: "manual",
+			headers,
+			body: `workspace=${encodeURIComponent(id)}&action=suspend&suspended=yes`,
+		});
+		expect(resume.status).toBe(303);
+	});
+
 	it("lists workspaces for a service admin without names, emails, or library text", async () => {
 		const id = library.replace(/-library$/, "");
 		await recordOperations(db, id, "read", 12_000);
@@ -535,7 +688,11 @@ describe("roles on the screen, the Git route, and MCP", () => {
 		const admin = await fetch(`${origin}/admin`, { headers: { "Cf-Access-Jwt-Assertion": await jwt(SERVICE) } });
 		expect(admin.status).toBe(200);
 		const html = await admin.text();
-		expect(html).toContain("Northwind");
+		expect(html).not.toContain("Northwind");
+		expect(html).not.toContain("Eastwind");
+		expect(html).not.toContain("Spare");
+		expect(html).toContain(id);
+		expect(html).toContain("Type the workspace id");
 		expect(html).toContain("2 people");
 		expect(html).toContain("1 agent");
 		expect(html).toMatch(/\$0\.\d{2}/);
@@ -602,6 +759,19 @@ describe("roles on the screen, the Git route, and MCP", () => {
 		expect(spareId).not.toBe("");
 		const beforeDelete = await env.WORKSPACE.list({ limit: 200 });
 		expect(beforeDelete.repos.some((repo) => repo.name === `${spareId}-library`)).toBe(true);
+		const named = await fetch(`${origin}/admin`, {
+			method: "POST",
+			redirect: "manual",
+			headers: {
+				"Cf-Access-Jwt-Assertion": await jwt(SERVICE),
+				"Content-Type": "application/x-www-form-urlencoded",
+			},
+			body: `workspace=${encodeURIComponent(spareId)}&action=delete&confirm=Spare`,
+		});
+		expect(named.status).toBe(400);
+		const namedHtml = await named.text();
+		expect(namedHtml).toContain("Type the workspace id to delete it.");
+		expect(namedHtml).not.toContain("Spare");
 		const removed = await fetch(`${origin}/admin`, {
 			method: "POST",
 			redirect: "manual",
@@ -609,7 +779,7 @@ describe("roles on the screen, the Git route, and MCP", () => {
 				"Cf-Access-Jwt-Assertion": await jwt(SERVICE),
 				"Content-Type": "application/x-www-form-urlencoded",
 			},
-			body: `workspace=${encodeURIComponent(spareId)}&action=delete&name=Spare`,
+			body: `workspace=${encodeURIComponent(spareId)}&action=delete&confirm=${encodeURIComponent(spareId)}`,
 		});
 		expect(removed.status).toBe(303);
 		const afterDelete = await env.WORKSPACE.list({ limit: 200 });
@@ -623,5 +793,19 @@ describe("roles on the screen, the Git route, and MCP", () => {
 		expect(goneHtml).toContain("Sign in");
 		expect(goneHtml).not.toContain("Spare");
 		expect(goneHtml).not.toContain("Interview to draft");
+		const auditRows = await db
+			.prepare(`SELECT action, actor_hash, detail FROM service_audit`)
+			.bind()
+			.all<{ action: string; actor_hash: string | null; detail: string }>();
+		const rows = auditRows.results ?? [];
+		expect(rows.length).toBeGreaterThan(0);
+		const actorHash = await hashKey(SERVICE);
+		for (const row of rows) {
+			expect(row.actor_hash).toBe(actorHash);
+			expect(row.detail.includes("@")).toBe(false);
+		}
+		expect(rows.map((row) => row.action).sort()).toEqual(
+			expect.arrayContaining(["limits", "suspend", "resume", "delete"]),
+		);
 	});
 });
