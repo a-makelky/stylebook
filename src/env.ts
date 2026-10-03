@@ -35,6 +35,8 @@ export interface Env {
 	MAX_OAUTH_REGISTRATIONS_PER_IP_PER_HOUR?: string;
 	/** How many Try the demo copies can be opened in one UTC day. */
 	MAX_DEMO_COPIES_PER_DAY?: string;
+	/** How many of those copies one connecting address can open in that day. */
+	MAX_DEMO_COPIES_PER_IP_PER_DAY?: string;
 	/** "access" (Cloudflare Access) or "link" (the email links kept in src/mail.ts). */
 	SIGN_IN?: string;
 	/** https://<team>.cloudflareaccess.com — set as a secret, not in the repo. */

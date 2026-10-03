@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { hashKey } from "../src/actors";
 import type { Env } from "../src/env";
 import { emailFromAccessJwt, signAccessJwt, signInMode, verifiedEmail } from "../src/identity";
-import { permit, type Action, type PermitInput } from "../src/permit";
+import { DEMO_UNAVAILABLE, permit, type Action, type PermitInput } from "../src/permit";
 import { STARTER_SKILL, STARTER_SKILL_PATH } from "../src/seed";
 import { recordOperations } from "../src/usage";
 import { FakeWorkspace } from "./fake-artifacts";
@@ -72,6 +72,15 @@ describe("one permission function", () => {
 			expect(refused(permit({ ...memberOn, action, locked: true }))).toBe("Only an Admin can publish a locked page.");
 			expect(allowed({ ...admin, action, locked: true })).toBe(true);
 		}
+		expect(refused(permit({ ...admin, action: "invite", demo: true }))).toBe(DEMO_UNAVAILABLE);
+		expect(refused(permit({ ...admin, action: "mirror", demo: true }))).toBe(DEMO_UNAVAILABLE);
+		expect(refused(permit({ ...admin, action: "restore", demo: true }))).toBe(DEMO_UNAVAILABLE);
+		expect(refused(permit({ ...admin, action: "connect-agent", demo: true }))).toBe(DEMO_UNAVAILABLE);
+		expect(allowed({ ...admin, action: "export", demo: true })).toBe(true);
+		expect(allowed({ ...admin, action: "publish", demo: true })).toBe(true);
+		expect(allowed({ ...admin, action: "decline", demo: true })).toBe(true);
+		expect(allowed({ ...admin, action: "combine", demo: true })).toBe(true);
+		expect(allowed({ ...admin, action: "invite" })).toBe(true);
 		expect(allowed({ ...admin, action: "lock" })).toBe(true);
 		expect(allowed({ ...memberOn, action: "lock" })).toBe(false);
 		expect(allowed({ ...admin, action: "unlock" })).toBe(true);

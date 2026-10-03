@@ -10,6 +10,7 @@ Stylebook is a shared, versioned library for a team's AI tooling, built on Cloud
 4. **Nothing personal.** This repo is public. No personal email addresses, account IDs, private links, or paths from anyone's machine. Artifacts remote URLs contain the account ID, so do not log or return them.
 5. **Real forks.** A suggestion copy is made with `fork()` in the same namespace as its library. Do not replace it with clone-and-push; that loses the recorded source and the fork event.
 6. **Ask before adding cost.** Nothing that bills per use beyond the Workers Paid plan without the owner's say-so.
+7. **Deploy from main.** Before any deploy, merge origin/main and deploy only from a commit that contains main. Never deploy a branch that is behind main.
 
 ## Words
 

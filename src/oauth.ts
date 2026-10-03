@@ -17,6 +17,7 @@ import { toolLabel } from "./catalog";
 import type { Env } from "./env";
 import { signInMode } from "./identity";
 import { limitsOf } from "./limits";
+import { DEMO_UNAVAILABLE, isDemoCopy } from "./permit";
 import { clientIp } from "./mail";
 import { handleMcp, type McpActorProps } from "./mcp";
 import { esc, page } from "./screen";
@@ -179,6 +180,11 @@ async function showConsent(request: Request, env: Env, oauth: OAuthHelpers, url:
 	}
 
 	const person = signed.actor;
+	if (await isDemoCopy(env.DB, person.workspaceId)) {
+		return html(
+			`<div class="sheet"><h1>Connect your tools</h1><p>${esc(DEMO_UNAVAILABLE)}</p></div>`,
+		);
+	}
 	const details = await oauth.describeConsent(authRequest);
 	const consent = await oauth.beginConsent(authRequest);
 	const registered = details.clientName.replace(/[\r\n]+/g, " ").trim().slice(0, 200);
@@ -258,6 +264,7 @@ async function finishConsent(request: Request, env: Env, oauth: OAuthHelpers): P
 	if (String(form.get("workspace") ?? "") !== signed.actor.workspaceId) {
 		return plain("Approve this for the workspace you are in.", 403);
 	}
+	if (await isDemoCopy(env.DB, signed.actor.workspaceId)) return plain(DEMO_UNAVAILABLE, 403);
 	const approved = await oauth.approveConsent(request, handle, { scope: ["suggest"] });
 	const client = await oauth.lookupClient(approved.request.clientId);
 	const tool = toolLabel(client?.clientName || approved.request.clientId);

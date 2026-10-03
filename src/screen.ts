@@ -29,6 +29,7 @@ import {
 	saveWorkspaceSettings,
 	workspaceById,
 } from "./teams";
+import { DEMO_UNAVAILABLE, isDemoCopy } from "./permit";
 import { authorize, invitationsForWorkspace, pendingInvitations, recordSignIn, setPageLock, workspaceState } from "./roles";
 import { scopedEnv } from "./usage";
 import { libraryName } from "./workspace";
@@ -37,7 +38,7 @@ import type { Env } from "./env";
 import { githubReturnMain, githubSetupMain, handleBackups, isBackupPath } from "./backups-page";
 import { icon } from "./icons";
 import { proofLines, type ProofLine } from "./diff";
-import { aliasBinding, createDemoCopy, takeWarmedCopy } from "./demo-copy";
+import { aliasBinding, connectingIp, createDemoCopy, takeWarmedCopy } from "./demo-copy";
 import { SEED_EDITS } from "./demo-seed";
 import { SAMPLE_FILES } from "./sample-files";
 import {
@@ -578,8 +579,9 @@ function renderPeople(
 	starter: boolean,
 	membersCanPublish: boolean,
 	links: boolean,
+	demo: boolean,
 ): string {
-	const note = message ? `<p class="${message.startsWith("Only an") || message.startsWith("An agent") || message.startsWith("The person") || message.startsWith("There is") || message.startsWith("That ") || message.startsWith("This ") || message.startsWith("Give ") || message.startsWith("Enter ") || message.startsWith("Type ") || message.startsWith("You cannot") ? "overlap" : "notice"}">${esc(message)}</p>` : "";
+	const note = message ? `<p class="${message.startsWith("Only an") || message.startsWith("An agent") || message.startsWith("The person") || message.startsWith("There is") || message.startsWith("That ") || message.startsWith("This ") || message.startsWith("Give ") || message.startsWith("Enter ") || message.startsWith("Type ") || message.startsWith("You cannot") || message.startsWith("Not available") ? "overlap" : "notice"}">${esc(message)}</p>` : "";
 	const shown = reveal
 		? `<p class="notice">This key for ${esc(reveal.name)} is shown once. Copy it now.</p>
        <p><code>${esc(reveal.key)}</code></p>
@@ -621,7 +623,7 @@ function renderPeople(
 		.join("");
 	const agentRows = agents
 		.map((agent) => {
-			const rename = agent.yours
+			const rename = agent.yours && !demo
 				? `<details class="rename"><summary>Rename</summary>
             <form method="post" action="/agents/rename" class="rename-form">${hidden("id", agent.id)}
               <label for="rename-${esc(agent.id)}">Name</label>
@@ -644,7 +646,9 @@ function renderPeople(
       </div>`;
 		})
 		.join("");
-	const invite = admin
+	const invite = demo
+		? `<h2>Invite</h2><p>${esc(DEMO_UNAVAILABLE)}</p>`
+		: admin
 		? `<h2>Invite</h2>
       <form method="post" action="/invite" class="invite-line">
         <label for="invite-email">Email
@@ -684,7 +688,9 @@ function renderPeople(
       </form>
     </section>`
 		: "";
-	const connect = `<h2>Connect your AI tools</h2>
+	const connect = demo
+		? ""
+		: `<h2>Connect your AI tools</h2>
       <p><a class="primary" href="/connect">Connect your AI tools</a></p>`;
 	return page({
 		account: accountLine(workspaceName, admin),
@@ -955,7 +961,9 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 		}
 
 		if (request.method === "POST" && path === "/try") {
-			return openDemo(env, url.origin, ctx);
+			const already = await actorFromRequest(request, env);
+			if (already) return redirect("/");
+			return openDemo(request, env, url.origin, ctx);
 		}
 
 		if (request.method === "POST" && path === "/join") {
@@ -1261,7 +1269,8 @@ async function peoplePage(
 	reveal: { name: string; key: string } | null,
 ): Promise<Response> {
 	const state = await workspaceState(env.DB, actor.workspaceId);
-	const admin = (await authorize(env, actor, "invite")).ok;
+	const demo = await isDemoCopy(env.DB, actor.workspaceId);
+	const admin = (await authorize(env, actor, demo ? "lock" : "invite")).ok;
 	const actors = await listActors(env.DB, actor.workspaceId);
 	const people = actors
 		.filter((item) => item.kind === "person")
@@ -1288,7 +1297,7 @@ async function peoplePage(
 			lastUsed: item.lastUsedAt ?? null,
 			yours: item.ownerId === actor.id,
 		}));
-	const invites = admin ? await invitationsForWorkspace(env.DB, actor.workspaceId) : [];
+	const invites = admin && !demo ? await invitationsForWorkspace(env.DB, actor.workspaceId) : [];
 	return html(
 		renderPeople(
 			state?.name ?? "Workspace",
@@ -1301,6 +1310,7 @@ async function peoplePage(
 			state?.ownerId === actor.id,
 			state?.membersCanPublish ?? false,
 			signInMode(env) === "link",
+			demo,
 		),
 	);
 }
@@ -1408,9 +1418,9 @@ function renderDemoMessage(message: string): string {
 	});
 }
 
-async function openDemo(env: Env, origin: string, ctx?: ExecutionContext): Promise<Response> {
+async function openDemo(request: Request, env: Env, origin: string, ctx?: ExecutionContext): Promise<Response> {
 	try {
-		const opened = await createDemoCopy(env, origin, new Date(), ctx);
+		const opened = await createDemoCopy(env, origin, new Date(), ctx, connectingIp(request));
 		if ("message" in opened) return html(renderDemoMessage(opened.message), 429);
 		const aliases = takeWarmedCopy(opened.workspaceId);
 		const home = new Request(new URL("/", origin), {

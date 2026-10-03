@@ -50,6 +50,8 @@ export interface PermitInput {
 	targetStarter?: boolean;
 	/** The agent belongs to this person. */
 	own?: boolean;
+	/** A short-lived Try the demo copy. Outbound and admin tools stay closed. */
+	demo?: boolean;
 }
 
 export type PermitResult = { ok: true } | { ok: false; sentence: string };
@@ -58,6 +60,18 @@ const PUBLISH: ReadonlySet<Action> = new Set(["publish", "decline", "combine", "
 
 const PUBLISH_SENTENCE = "Only an Admin can publish here. You can suggest this change instead.";
 const LOCKED_SENTENCE = "Only an Admin can publish a locked page.";
+
+/** Shown wherever a demo copy would otherwise invite, back up, mint a key, or connect a tool. */
+export const DEMO_UNAVAILABLE = "Not available in the demo. Start your own workspace to use this.";
+
+const DEMO_CLOSED: ReadonlySet<Action> = new Set(["invite", "mirror", "restore", "connect-agent"]);
+
+/** True when this workspace is a visitor's short-lived copy of the Demo workspace. */
+export async function isDemoCopy(db: D1Database, workspaceId: string): Promise<boolean> {
+	if (!workspaceId) return false;
+	const row = await db.prepare(`SELECT workspace_id FROM demo_copies WHERE workspace_id = ?1`).bind(workspaceId).first();
+	return Boolean(row);
+}
 
 function no(sentence: string): PermitResult {
 	return { ok: false, sentence };
@@ -70,6 +84,7 @@ function no(sentence: string): PermitResult {
 export function permit(input: PermitInput): PermitResult {
 	const { actor, role, action, settings } = input;
 	if (actor.removedAt) return no("That person is not in this workspace.");
+	if (input.demo && DEMO_CLOSED.has(action)) return no(DEMO_UNAVAILABLE);
 	// A download does not change the workspace, so a read-only workspace can
 	// still be downloaded. Mirror changes, sends, and restore cannot.
 	if (action === "export") {

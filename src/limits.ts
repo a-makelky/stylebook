@@ -17,6 +17,7 @@ export interface Limits {
 	signInEmailsGlobalPerHour: number;
 	oauthRegistrationsPerIpPerHour: number;
 	demoCopiesPerDay: number;
+	demoCopiesPerIpPerDay: number;
 }
 
 export const DEFAULT_LIMITS: Limits = {
@@ -31,6 +32,7 @@ export const DEFAULT_LIMITS: Limits = {
 	signInEmailsGlobalPerHour: 100,
 	oauthRegistrationsPerIpPerHour: 30,
 	demoCopiesPerDay: 80,
+	demoCopiesPerIpPerDay: 8,
 };
 
 function num(value: string | undefined, fallback: number): number {
@@ -77,6 +79,7 @@ export function limitsOf(env: Pick<Env, keyof LimitsAsEnv>): Limits {
 			DEFAULT_LIMITS.oauthRegistrationsPerIpPerHour,
 		),
 		demoCopiesPerDay: num(env.MAX_DEMO_COPIES_PER_DAY, DEFAULT_LIMITS.demoCopiesPerDay),
+		demoCopiesPerIpPerDay: num(env.MAX_DEMO_COPIES_PER_IP_PER_DAY, DEFAULT_LIMITS.demoCopiesPerIpPerDay),
 	};
 }
 
@@ -92,6 +95,7 @@ type LimitsAsEnv = {
 	MAX_SIGN_IN_EMAILS_GLOBAL_PER_HOUR?: string;
 	MAX_OAUTH_REGISTRATIONS_PER_IP_PER_HOUR?: string;
 	MAX_DEMO_COPIES_PER_DAY?: string;
+	MAX_DEMO_COPIES_PER_IP_PER_DAY?: string;
 };
 
 export const LIMIT_MESSAGE = {
@@ -103,4 +107,5 @@ export const LIMIT_MESSAGE = {
 	openSuggestions: "This workspace has as many open suggestions as it can hold.",
 	signIn: "Too many sign-in emails were sent. Try again in an hour.",
 	demo: "The demo is full for today. Start a workspace, or come back tomorrow.",
+	demoNetwork: "The demo has been opened enough times from this network today. Start a workspace, or come back tomorrow.",
 } as const;

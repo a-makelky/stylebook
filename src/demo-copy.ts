@@ -17,7 +17,7 @@ import { LIMIT_MESSAGE, limitsOf } from "./limits";
 import { describeError } from "./redact";
 import { openSession } from "./teams";
 import { trackUsage } from "./usage";
-import { DEFAULT_BRANCH, deleteWorkspaceRepos, errorCode, getRepo, libraryName, listPaths, readBytes, REPO_NAME_LIMIT } from "./workspace";
+import { DEFAULT_BRANCH, deleteWorkspaceRepos, errorCode, getRepo, libraryName, listPaths, listRepoNames, readBytes, REPO_NAME_LIMIT } from "./workspace";
 
 export const DEMO_SOURCE_ID = "demo";
 const DEMO_TTL_MS = 24 * 60 * 60 * 1000;
@@ -46,6 +46,19 @@ function utcDayStart(now = new Date()): string {
 	return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
 }
 
+function wrote(result: D1Result): number {
+	return result.meta?.changes ?? 0;
+}
+
+/**
+ * The address Cloudflare connected, not a header the caller can set.
+ * https://developers.cloudflare.com/fundamentals/reference/http-request-headers/#cf-connecting-ip
+ */
+export function connectingIp(request: Request): string {
+	const value = request.headers.get("CF-Connecting-IP")?.trim() ?? "";
+	return value.slice(0, 80) || "unknown";
+}
+
 /** The seeded suggestion repos, renamed into the visitor's workspace. */
 export function demoDestRepo(workspaceId: string, sourceName: string): string | null {
 	if (sourceName === libraryName(DEMO_SOURCE_ID)) return libraryName(workspaceId);
@@ -67,7 +80,27 @@ function missingSource(error: unknown): boolean {
 	return error instanceof Error && error.message === "DEMO_SOURCE_MISSING";
 }
 
+const READ_METHODS = new Set(["readFile", "log", "readTree", "listFiles"]);
+
 const warmedCopies = new Map<string, Map<string, ArtifactsRepo>>();
+
+/** Reads go through. Anything else would change the shared Demo library. */
+function rejectWrites(repo: ArtifactsRepo): ArtifactsRepo {
+	const stub = repo as unknown as Record<string, (...args: unknown[]) => unknown>;
+	return new Proxy(repo, {
+		get(target, prop, receiver) {
+			if (typeof prop !== "string") return Reflect.get(target, prop, receiver);
+			if (!READ_METHODS.has(prop)) {
+				const value = Reflect.get(target, prop, receiver);
+				if (typeof value !== "function") return value;
+				return () => Promise.reject(new Error("DEMO_LIBRARY_READONLY"));
+			}
+			const value = stub[prop];
+			if (typeof value !== "function") return value;
+			return (...args: unknown[]) => value.apply(repo, args);
+		},
+	}) as ArtifactsRepo;
+}
 
 /** The reads taken while the copy was forked, so the first page does not read them again. */
 export function takeWarmedCopy(workspaceId: string): Map<string, ArtifactsRepo> {
@@ -101,7 +134,7 @@ function cachingRepo(repo: ArtifactsRepo): ArtifactsRepo {
 					};
 				};
 			}
-			if (prop === "log" || prop === "readTree") {
+			if (prop === "log" || prop === "readTree" || prop === "listFiles") {
 				return (...args: unknown[]) => {
 					const key = `${String(prop)}:${JSON.stringify(args)}`;
 					let pending = calls.get(key);
@@ -114,7 +147,7 @@ function cachingRepo(repo: ArtifactsRepo): ArtifactsRepo {
 			}
 			const value = Reflect.get(target, prop, receiver);
 			if (typeof value !== "function") return value;
-			return (...args: unknown[]) => stub[String(prop)](...args);
+			return () => Promise.reject(new Error("DEMO_LIBRARY_READONLY"));
 		},
 	}) as ArtifactsRepo;
 }
@@ -197,7 +230,13 @@ export function aliasBinding(workspace: Artifacts, aliases: Map<string, Artifact
 				if (typeof value !== "function") return value;
 				return (...args: unknown[]) => stub[String(prop)](...args);
 			}
-			return async (name: string) => aliases.get(name) ?? stub.get(name);
+			return async (name: string) => {
+				const alias = aliases.get(name);
+				// The alias is the shared Demo library, kept for the first page.
+				// Only reads are forwarded. A write would land on that shared library.
+				if (alias) return rejectWrites(alias);
+				return stub.get(name);
+			};
 		},
 	}) as Artifacts;
 }
@@ -212,7 +251,8 @@ async function forkSeeded(
 	origin: string,
 	workspace: Artifacts,
 	workspaceId: string,
-	ctx?: ExecutionContext,
+	ctx: ExecutionContext | undefined,
+	background: { rest: Promise<void> },
 ): Promise<void> {
 	const first = seededSuggestionNames(DEMO_SOURCE_ID, DEMO_FIRST_PAGE);
 	const rest = seededSuggestionNames(DEMO_SOURCE_ID).filter((name) => !first.includes(name));
@@ -239,6 +279,8 @@ async function forkSeeded(
 		const failure = describeError(error);
 		console.error(failure.code, failure.message);
 	});
+	// Kept so a failed open can wait for these forks before it deletes the copy.
+	background.rest = later;
 	if (ctx) ctx.waitUntil(later);
 	else await later;
 }
@@ -295,6 +337,8 @@ async function copyPushes(db: D1Database, workspaceId: string, only?: ReadonlySe
 }
 
 async function purgeDemoRows(db: D1Database, workspaceId: string): Promise<void> {
+	const library = `${workspaceId}-library`;
+	const suggestions = `${workspaceId}-sug-%`;
 	const actors = await db
 		.prepare(`SELECT id FROM actors WHERE workspace_id = ?1`)
 		.bind(workspaceId)
@@ -305,13 +349,29 @@ async function purgeDemoRows(db: D1Database, workspaceId: string): Promise<void>
 		await db.prepare(`DELETE FROM declines WHERE actor_id = ?1`).bind(actor.id).run();
 		await db.prepare(`DELETE FROM access_grants WHERE actor_id = ?1`).bind(actor.id).run();
 	}
+	await db.prepare(`DELETE FROM sessions WHERE workspace_id = ?1`).bind(workspaceId).run();
 	await db.prepare(`DELETE FROM oauth_agents WHERE workspace_id = ?1`).bind(workspaceId).run();
 	await db.prepare(`DELETE FROM actors WHERE workspace_id = ?1`).bind(workspaceId).run();
-	await db.prepare(`DELETE FROM gateway_pushes WHERE workspace_id = ?1`).bind(workspaceId).run();
+	await db.prepare(`DELETE FROM gateway_pushes WHERE workspace_id = ?1 OR repo_name = ?2 OR repo_name LIKE ?3`)
+		.bind(workspaceId, library, suggestions)
+		.run();
+	await db.prepare(`DELETE FROM arrivals WHERE repo_name = ?1 OR repo_name LIKE ?2`).bind(library, suggestions).run();
+	await db.prepare(`DELETE FROM push_confirmations WHERE repo_name = ?1 OR repo_name LIKE ?2`)
+		.bind(library, suggestions)
+		.run();
+	await db.prepare(`DELETE FROM unseen_pushes WHERE repo_name = ?1 OR repo_name LIKE ?2`).bind(library, suggestions).run();
+	await db.prepare(`DELETE FROM declines WHERE repo_name = ?1 OR repo_name LIKE ?2`).bind(library, suggestions).run();
+	await db.prepare(`DELETE FROM access_grants WHERE repo_name = ?1 OR repo_name LIKE ?2`).bind(library, suggestions).run();
 	await db.prepare(`DELETE FROM invitations WHERE workspace_id = ?1`).bind(workspaceId).run();
+	await db.prepare(`DELETE FROM sign_in_links WHERE workspace_id = ?1`).bind(workspaceId).run();
 	await db.prepare(`DELETE FROM locked_pages WHERE workspace_id = ?1`).bind(workspaceId).run();
 	await db.prepare(`DELETE FROM workspace_operations WHERE workspace_id = ?1`).bind(workspaceId).run();
 	await db.prepare(`DELETE FROM workspace_operation_months WHERE workspace_id = ?1`).bind(workspaceId).run();
+	await db.prepare(`DELETE FROM workspace_starts WHERE workspace_id = ?1`).bind(workspaceId).run();
+	await db.prepare(`DELETE FROM workspace_audit WHERE workspace_id = ?1`).bind(workspaceId).run();
+	await db.prepare(`DELETE FROM backup_mirrors WHERE workspace_id = ?1`).bind(workspaceId).run();
+	await db.prepare(`DELETE FROM backup_states WHERE workspace_id = ?1`).bind(workspaceId).run();
+	await db.prepare(`DELETE FROM service_audit WHERE workspace_id = ?1`).bind(workspaceId).run();
 	await db.prepare(`DELETE FROM demo_copies WHERE workspace_id = ?1`).bind(workspaceId).run();
 	await db.prepare(`DELETE FROM workspaces WHERE id = ?1`).bind(workspaceId).run();
 }
@@ -348,27 +408,86 @@ export async function deleteExpiredDemos(env: Env, now = new Date()): Promise<nu
 			console.error(failure.code, failure.message);
 		}
 	}
+	const swept = await sweepOrphanDemoRepos(env);
 	if (failed > 0) throw new Error("A demo copy could not be deleted.");
-	return deleted;
+	return deleted + swept;
+}
+
+/** A demo copy id is `d` plus 7 letters. The shared Demo workspace is `demo`. */
+function demoCopyIdFromRepo(name: string): string | null {
+	const library = /^(d[a-z0-9]{7})-library$/.exec(name);
+	if (library) return library[1] ?? null;
+	const suggestion = /^(d[a-z0-9]{7})-sug-/.exec(name);
+	return suggestion?.[1] ?? null;
+}
+
+/**
+ * Repos left behind when an open failed after fork(). A copy that still has a
+ * row is in use and is left alone. list() pages the namespace.
+ * https://developers.cloudflare.com/artifacts/api/workers-binding/
+ */
+export async function sweepOrphanDemoRepos(env: Env): Promise<number> {
+	const names = await listRepoNames(env.WORKSPACE);
+	const byId = new Map<string, string[]>();
+	for (const name of names) {
+		const id = demoCopyIdFromRepo(name);
+		if (!id) continue;
+		const list = byId.get(id) ?? [];
+		list.push(name);
+		byId.set(id, list);
+	}
+	let removed = 0;
+	for (const [id, repos] of byId) {
+		const row = await env.DB.prepare(`SELECT workspace_id FROM demo_copies WHERE workspace_id = ?1`).bind(id).first();
+		if (row) continue;
+		for (const name of repos) {
+			try {
+				await env.WORKSPACE.delete(name);
+			} catch (error) {
+				if (errorCode(error) !== "NOT_FOUND") throw error;
+			}
+		}
+		await purgeDemoRows(env.DB, id);
+		removed += 1;
+	}
+	if (removed > 0) console.log(JSON.stringify({ event: "demo_orphan_repos", removed }));
+	return removed;
 }
 
 /**
  * Sign the visitor in as Editor, an Admin, on a new copy of the Demo workspace.
  * No email and no Cloudflare Access. Operations are counted on this copy.
  */
+async function demoRefusal(env: Env, now: Date, ip: string): Promise<string> {
+	const limits = limitsOf(env);
+	if ((await demoCopiesToday(env, now)) >= limits.demoCopiesPerDay) return LIMIT_MESSAGE.demo;
+	const byIp = await env.DB.prepare(`SELECT COUNT(*) AS n FROM demo_copies WHERE ip = ?1 AND created_at >= ?2`)
+		.bind(ip, utcDayStart(now))
+		.first<{ n: number }>();
+	if ((byIp?.n ?? 0) >= limits.demoCopiesPerIpPerDay) return LIMIT_MESSAGE.demoNetwork;
+	return LIMIT_MESSAGE.demo;
+}
+
 export async function createDemoCopy(
 	env: Env,
 	origin: string,
 	now = new Date(),
 	ctx?: ExecutionContext,
+	ip = "unknown",
 ): Promise<OpenedDemo | { message: string }> {
-	const limit = limitsOf(env).demoCopiesPerDay;
-	if ((await demoCopiesToday(env, now)) >= limit) return { message: LIMIT_MESSAGE.demo };
+	const limits = limitsOf(env);
+	const network = ip.trim().slice(0, 80) || "unknown";
 
 	let workspaceId = "";
 	for (let attempt = 0; attempt < 5; attempt++) {
 		const id = demoWorkspaceId();
-		const taken = await env.DB.prepare(`SELECT id FROM workspaces WHERE id = ?1`).bind(id).first();
+		const taken = await env.DB.prepare(
+			`SELECT id AS id FROM workspaces WHERE id = ?1
+       UNION
+       SELECT workspace_id AS id FROM demo_copies WHERE workspace_id = ?1`,
+		)
+			.bind(id)
+			.first();
 		if (!taken) {
 			workspaceId = id;
 			break;
@@ -378,21 +497,32 @@ export async function createDemoCopy(
 
 	const createdAt = now.toISOString();
 	const expiresAt = new Date(now.getTime() + DEMO_TTL_MS).toISOString();
-	await env.DB.prepare(
-		`INSERT INTO workspaces (id, name, created_at, welcome_pending) VALUES (?1, 'Demo', ?2, 0)`,
+	const dayStart = utcDayStart(now);
+	// One statement, so concurrent opens cannot all pass the count.
+	// D1 runs one statement to a commit.
+	// https://developers.cloudflare.com/d1/worker-api/d1-database/#batch
+	const reserved = await env.DB.prepare(
+		`INSERT INTO demo_copies (workspace_id, created_at, expires_at, ip)
+     SELECT ?1, ?2, ?3, ?4
+     WHERE (SELECT COUNT(*) FROM demo_copies WHERE created_at >= ?5) < ?6
+       AND (SELECT COUNT(*) FROM demo_copies WHERE ip = ?4 AND created_at >= ?5) < ?7`,
 	)
-		.bind(workspaceId, createdAt)
+		.bind(workspaceId, createdAt, expiresAt, network, dayStart, limits.demoCopiesPerDay, limits.demoCopiesPerIpPerDay)
 		.run();
-	await env.DB.prepare(`INSERT INTO demo_copies (workspace_id, created_at, expires_at) VALUES (?1, ?2, ?3)`)
-		.bind(workspaceId, createdAt, expiresAt)
-		.run();
+	if (wrote(reserved) < 1) return { message: await demoRefusal(env, now, network) };
 
 	const tracked = trackUsage(env.WORKSPACE, env.DB, workspaceId);
 	const counted: Env = { ...env, WORKSPACE: tracked.binding };
+	const background = { rest: Promise.resolve() };
 	try {
+		await env.DB.prepare(
+			`INSERT INTO workspaces (id, name, created_at, welcome_pending) VALUES (?1, 'Demo', ?2, 0)`,
+		)
+			.bind(workspaceId, createdAt)
+			.run();
 		// The suggestion rows are copied after the source exists. Seeding, when
 		// it is needed, writes those rows.
-		await forkSeeded(env, origin, counted.WORKSPACE, workspaceId, ctx);
+		await forkSeeded(env, origin, counted.WORKSPACE, workspaceId, ctx, background);
 		const first = new Set(seededSuggestionNames(DEMO_SOURCE_ID, DEMO_FIRST_PAGE));
 		const secret = (
 			await Promise.all([
@@ -434,6 +564,7 @@ export async function createDemoCopy(
 		return { secret, workspaceId };
 	} catch (error) {
 		warmedCopies.delete(workspaceId);
+		await background.rest.catch(() => {});
 		await tracked.flush().catch(() => {});
 		await deleteDemoCopy(env, workspaceId).catch(() => {});
 		throw error;
