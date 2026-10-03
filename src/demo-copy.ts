@@ -11,13 +11,13 @@
 // https://developers.cloudflare.com/artifacts/platform/pricing/
 
 import { registerActor } from "./actors";
-import { seedOpenSuggestions, seededSuggestionNames } from "./demo-seed";
+import { DEMO_FIRST_PAGE, seedOpenSuggestions, seededSuggestionNames } from "./demo-seed";
 import type { Env } from "./env";
 import { LIMIT_MESSAGE, limitsOf } from "./limits";
 import { describeError } from "./redact";
 import { openSession } from "./teams";
 import { trackUsage } from "./usage";
-import { deleteWorkspaceRepos, errorCode, getRepo, libraryName, REPO_NAME_LIMIT } from "./workspace";
+import { DEFAULT_BRANCH, deleteWorkspaceRepos, errorCode, getRepo, libraryName, listPaths, readBytes, REPO_NAME_LIMIT } from "./workspace";
 
 export const DEMO_SOURCE_ID = "demo";
 const DEMO_TTL_MS = 24 * 60 * 60 * 1000;
@@ -63,55 +63,187 @@ async function demoCopiesToday(env: Env, now: Date): Promise<number> {
 	return row?.n ?? 0;
 }
 
-async function ensureDemoSource(env: Env, origin: string): Promise<void> {
-	const library = await getRepo(env.WORKSPACE, libraryName(DEMO_SOURCE_ID));
-	const seeded = await Promise.all(
-		seededSuggestionNames(DEMO_SOURCE_ID).map((name) => getRepo(env.WORKSPACE, name)),
-	);
-	if (library && seeded.every(Boolean)) return;
-	await seedOpenSuggestions(env, origin, {
-		personKey: randomKey(),
-		researcherKey: randomKey(),
-		proofreaderKey: randomKey(),
-		workspaceId: DEMO_SOURCE_ID,
-		workspaceName: "Demo",
-	});
+function missingSource(error: unknown): boolean {
+	return error instanceof Error && error.message === "DEMO_SOURCE_MISSING";
 }
 
-async function forkSeeded(workspace: Artifacts, workspaceId: string): Promise<void> {
-	const library = await getRepo(workspace, libraryName(DEMO_SOURCE_ID));
-	if (!library) throw new Error("The demo library is not ready.");
-	const jobs: Promise<unknown>[] = [
-		library.fork(libraryName(workspaceId), {
-			description: "Demo copy of the library",
-			defaultBranchOnly: true,
-		}),
-	];
-	for (const sourceName of seededSuggestionNames(DEMO_SOURCE_ID)) {
-		const dest = demoDestRepo(workspaceId, sourceName);
-		if (!dest) continue;
+const warmedCopies = new Map<string, Map<string, ArtifactsRepo>>();
+
+/** The reads taken while the copy was forked, so the first page does not read them again. */
+export function takeWarmedCopy(workspaceId: string): Map<string, ArtifactsRepo> {
+	const found = warmedCopies.get(workspaceId) ?? new Map();
+	warmedCopies.delete(workspaceId);
+	return found;
+}
+
+function cachingRepo(repo: ArtifactsRepo): ArtifactsRepo {
+	const files = new Map<string, Promise<Uint8Array | null>>();
+	const calls = new Map<string, Promise<unknown>>();
+	const stub = repo as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+	return new Proxy(repo, {
+		get(target, prop, receiver) {
+			if (prop === "readFile") {
+				return async (opts: { ref?: string; path: string }) => {
+					const key = `${opts?.ref ?? ""}\n${opts?.path ?? ""}`;
+					let pending = files.get(key);
+					if (!pending) {
+						pending = (async () => {
+							const blob = (await stub.readFile(opts)) as { arrayBuffer: () => Promise<ArrayBuffer> } | null;
+							return blob ? new Uint8Array(await blob.arrayBuffer()) : null;
+						})();
+						files.set(key, pending);
+					}
+					const bytes = await pending;
+					if (!bytes) return null;
+					const copy = bytes.slice();
+					return {
+						arrayBuffer: async () => copy.buffer.slice(copy.byteOffset, copy.byteOffset + copy.byteLength),
+					};
+				};
+			}
+			if (prop === "log" || prop === "readTree") {
+				return (...args: unknown[]) => {
+					const key = `${String(prop)}:${JSON.stringify(args)}`;
+					let pending = calls.get(key);
+					if (!pending) {
+						pending = stub[String(prop)](...args);
+						calls.set(key, pending);
+					}
+					return pending;
+				};
+			}
+			const value = Reflect.get(target, prop, receiver);
+			if (typeof value !== "function") return value;
+			return (...args: unknown[]) => stub[String(prop)](...args);
+		},
+	}) as ArtifactsRepo;
+}
+
+async function warmRepo(repo: ArtifactsRepo, suggestion: boolean): Promise<void> {
+	const paths = await listPaths(repo);
+	await Promise.all(paths.map((path) => readBytes(repo, path)));
+	await repo.log({ ref: DEFAULT_BRANCH, limit: 1000 });
+	if (!suggestion) return;
+	const commits = await repo.log({ ref: DEFAULT_BRANCH, limit: 1 });
+	const parent = commits[0]?.parents?.[0];
+	if (parent) await readBytes(repo, DEMO_FIRST_PAGE, parent);
+}
+
+async function forkOne(
+	workspace: Artifacts,
+	sourceName: string,
+	destName: string,
+	description: string,
+	warm: boolean,
+): Promise<ArtifactsRepo | null> {
+	const repo = await getRepo(workspace, sourceName);
+	if (!repo) throw new Error("DEMO_SOURCE_MISSING");
+	let cached: ArtifactsRepo | null = null;
+	let warming: Promise<void> = Promise.resolve();
+	if (warm) {
+		const reader = (await getRepo(workspace, sourceName)) ?? repo;
+		cached = cachingRepo(reader);
+		warming = warmRepo(cached, sourceName !== libraryName(DEMO_SOURCE_ID));
+	}
+	await Promise.all([
+		warming,
+		(async () => {
+			try {
+				// fork() resolves with the new repo. The first page is drawn from
+				// the reads above, which run while the copy is being made.
+				// https://developers.cloudflare.com/artifacts/api/workers-binding/
+				await repo.fork(destName, { description, defaultBranchOnly: true });
+			} catch (error) {
+				if (errorCode(error) !== "ALREADY_EXISTS") throw error;
+			}
+		})(),
+	]);
+	return cached;
+}
+
+async function forkAll(
+	workspace: Artifacts,
+	workspaceId: string,
+	sourceNames: string[],
+	library: boolean,
+	warm: boolean,
+): Promise<Map<string, ArtifactsRepo>> {
+	const jobs: Promise<[string, ArtifactsRepo | null]>[] = [];
+	if (library) {
+		const dest = libraryName(workspaceId);
 		jobs.push(
-			(async () => {
-				const repo = await getRepo(workspace, sourceName);
-				if (!repo) return;
-				await repo.fork(dest, {
-					description: "Demo copy of a suggestion",
-					defaultBranchOnly: true,
-				});
-			})(),
+			forkOne(workspace, libraryName(DEMO_SOURCE_ID), dest, "Demo copy of the library", warm).then((repo) => [dest, repo]),
 		);
 	}
-	await Promise.all(jobs);
-	await getRepo(workspace, libraryName(workspaceId));
-	await Promise.all(
-		seededSuggestionNames(DEMO_SOURCE_ID).map(async (sourceName) => {
-			const dest = demoDestRepo(workspaceId, sourceName);
-			if (dest) await getRepo(workspace, dest);
-		}),
-	);
+	for (const sourceName of sourceNames) {
+		const dest = demoDestRepo(workspaceId, sourceName);
+		if (!dest) continue;
+		jobs.push(forkOne(workspace, sourceName, dest, "Demo copy of a suggestion", warm).then((repo) => [dest, repo]));
+	}
+	const aliases = new Map<string, ArtifactsRepo>();
+	for (const [dest, repo] of await Promise.all(jobs)) {
+		if (repo) aliases.set(dest, repo);
+	}
+	return aliases;
 }
 
-async function copyPushes(db: D1Database, workspaceId: string): Promise<void> {
+export function aliasBinding(workspace: Artifacts, aliases: Map<string, ArtifactsRepo>): Artifacts {
+	if (aliases.size === 0) return workspace;
+	const stub = workspace as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+	return new Proxy(workspace, {
+		get(target, prop, receiver) {
+			if (prop !== "get") {
+				const value = Reflect.get(target, prop, receiver);
+				if (typeof value !== "function") return value;
+				return (...args: unknown[]) => stub[String(prop)](...args);
+			}
+			return async (name: string) => aliases.get(name) ?? stub.get(name);
+		},
+	}) as Artifacts;
+}
+
+/**
+ * Fork the library and the suggestions on the first page before returning.
+ * The other seeded suggestions follow in the background so the first page
+ * can open while they are still being copied.
+ */
+async function forkSeeded(
+	env: Env,
+	origin: string,
+	workspace: Artifacts,
+	workspaceId: string,
+	ctx?: ExecutionContext,
+): Promise<void> {
+	const first = seededSuggestionNames(DEMO_SOURCE_ID, DEMO_FIRST_PAGE);
+	const rest = seededSuggestionNames(DEMO_SOURCE_ID).filter((name) => !first.includes(name));
+	const forkFirst = () => forkAll(workspace, workspaceId, first, true, true);
+	let aliases: Map<string, ArtifactsRepo>;
+	try {
+		aliases = await forkFirst();
+	} catch (error) {
+		if (!missingSource(error)) throw error;
+		await seedOpenSuggestions(env, origin, {
+			personKey: randomKey(),
+			researcherKey: randomKey(),
+			proofreaderKey: randomKey(),
+			workspaceId: DEMO_SOURCE_ID,
+			workspaceName: "Demo",
+		});
+		aliases = await forkFirst();
+	}
+	warmedCopies.set(workspaceId, aliases);
+	const later = (async () => {
+		await forkAll(workspace, workspaceId, rest, false, false);
+		await copyPushes(env.DB, workspaceId, new Set(rest));
+	})().catch((error: unknown) => {
+		const failure = describeError(error);
+		console.error(failure.code, failure.message);
+	});
+	if (ctx) ctx.waitUntil(later);
+	else await later;
+}
+
+async function copyPushes(db: D1Database, workspaceId: string, only?: ReadonlySet<string>): Promise<void> {
 	const rows = await db
 		.prepare(
 			`SELECT repo_name, ref_name, edition_id, actor_id, actor_name, actor_kind,
@@ -132,30 +264,34 @@ async function copyPushes(db: D1Database, workspaceId: string): Promise<void> {
 			model: string | null;
 			accepted_at: string;
 		}>();
+	const statements = [];
 	for (const row of rows.results ?? []) {
+		if (only && !only.has(row.repo_name)) continue;
 		const dest = demoDestRepo(workspaceId, row.repo_name);
 		if (!dest) continue;
-		await db
-			.prepare(
-				`INSERT OR IGNORE INTO gateway_pushes
+		statements.push(
+			db
+				.prepare(
+					`INSERT OR IGNORE INTO gateway_pushes
           (repo_name, ref_name, edition_id, actor_id, actor_name, actor_kind, owner_id, owner_name, model, accepted_at, workspace_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
-			)
-			.bind(
-				dest,
-				row.ref_name,
-				row.edition_id,
-				row.actor_id,
-				row.actor_name,
-				row.actor_kind,
-				row.owner_id,
-				row.owner_name,
-				row.model,
-				row.accepted_at,
-				workspaceId,
-			)
-			.run();
+				)
+				.bind(
+					dest,
+					row.ref_name,
+					row.edition_id,
+					row.actor_id,
+					row.actor_name,
+					row.actor_kind,
+					row.owner_id,
+					row.owner_name,
+					row.model,
+					row.accepted_at,
+					workspaceId,
+				),
+		);
 	}
+	if (statements.length > 0) await db.batch(statements);
 }
 
 async function purgeDemoRows(db: D1Database, workspaceId: string): Promise<void> {
@@ -220,10 +356,14 @@ export async function deleteExpiredDemos(env: Env, now = new Date()): Promise<nu
  * Sign the visitor in as Editor, an Admin, on a new copy of the Demo workspace.
  * No email and no Cloudflare Access. Operations are counted on this copy.
  */
-export async function createDemoCopy(env: Env, origin: string, now = new Date()): Promise<OpenedDemo | { message: string }> {
+export async function createDemoCopy(
+	env: Env,
+	origin: string,
+	now = new Date(),
+	ctx?: ExecutionContext,
+): Promise<OpenedDemo | { message: string }> {
 	const limit = limitsOf(env).demoCopiesPerDay;
 	if ((await demoCopiesToday(env, now)) >= limit) return { message: LIMIT_MESSAGE.demo };
-	await ensureDemoSource(env, origin);
 
 	let workspaceId = "";
 	for (let attempt = 0; attempt < 5; attempt++) {
@@ -250,38 +390,50 @@ export async function createDemoCopy(env: Env, origin: string, now = new Date())
 	const tracked = trackUsage(env.WORKSPACE, env.DB, workspaceId);
 	const counted: Env = { ...env, WORKSPACE: tracked.binding };
 	try {
-		await forkSeeded(counted.WORKSPACE, workspaceId);
-		await copyPushes(env.DB, workspaceId);
-		const editor = await registerActor(env.DB, {
-			id: `${workspaceId}editor`,
-			kind: "person",
-			name: "Editor",
-			workspaceId,
-			role: "admin",
-			key: randomKey(),
-		});
-		await registerActor(env.DB, {
-			id: `${workspaceId}researcher`,
-			kind: "agent",
-			name: "Researcher",
-			workspaceId,
-			ownerId: editor.id,
-			model: "researcher",
-			key: randomKey(),
-		});
-		await registerActor(env.DB, {
-			id: `${workspaceId}proofreader`,
-			kind: "agent",
-			name: "Proofreader",
-			workspaceId,
-			ownerId: editor.id,
-			model: "proofreader",
-			key: randomKey(),
-		});
-		const secret = await openSession(env.DB, editor);
+		// The suggestion rows are copied after the source exists. Seeding, when
+		// it is needed, writes those rows.
+		await forkSeeded(env, origin, counted.WORKSPACE, workspaceId, ctx);
+		const first = new Set(seededSuggestionNames(DEMO_SOURCE_ID, DEMO_FIRST_PAGE));
+		const secret = (
+			await Promise.all([
+				copyPushes(env.DB, workspaceId, ctx ? first : undefined),
+				(async () => {
+					const editor = await registerActor(env.DB, {
+						id: `${workspaceId}editor`,
+						kind: "person",
+						name: "Editor",
+						workspaceId,
+						role: "admin",
+						key: randomKey(),
+					});
+					await Promise.all([
+						registerActor(env.DB, {
+							id: `${workspaceId}researcher`,
+							kind: "agent",
+							name: "Researcher",
+							workspaceId,
+							ownerId: editor.id,
+							model: "researcher",
+							key: randomKey(),
+						}),
+						registerActor(env.DB, {
+							id: `${workspaceId}proofreader`,
+							kind: "agent",
+							name: "Proofreader",
+							workspaceId,
+							ownerId: editor.id,
+							model: "proofreader",
+							key: randomKey(),
+						}),
+					]);
+					return openSession(env.DB, editor);
+				})(),
+			])
+		)[1];
 		await tracked.flush();
 		return { secret, workspaceId };
 	} catch (error) {
+		warmedCopies.delete(workspaceId);
 		await tracked.flush().catch(() => {});
 		await deleteDemoCopy(env, workspaceId).catch(() => {});
 		throw error;

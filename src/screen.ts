@@ -36,7 +36,7 @@ import { describeError } from "./redact";
 import type { Env } from "./env";
 import { icon } from "./icons";
 import { proofLines, type ProofLine } from "./diff";
-import { createDemoCopy } from "./demo-copy";
+import { aliasBinding, createDemoCopy, takeWarmedCopy } from "./demo-copy";
 import { SEED_EDITS } from "./demo-seed";
 import { SAMPLE_FILES } from "./sample-files";
 import {
@@ -931,7 +931,7 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 		}
 
 		if (request.method === "POST" && path === "/try") {
-			return openDemo(env, url.origin);
+			return openDemo(env, url.origin, ctx);
 		}
 
 		if (request.method === "POST" && path === "/join") {
@@ -971,6 +971,22 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 			}
 			if (signInMode(env) === "access") return html(renderAccessGate(), 401);
 			return html(renderGate("Send yourself a sign-in link to open the library."), 401);
+		}
+
+		if (request.method === "GET" && path === "/") {
+			const painted = await env.DB.prepare(
+				`SELECT paint FROM demo_copies WHERE workspace_id = ?1 AND paint IS NOT NULL`,
+			)
+				.bind(signed.actor.workspaceId)
+				.first<{ paint: string }>();
+			if (painted?.paint) {
+				const clear = env.DB.prepare(`UPDATE demo_copies SET paint = NULL WHERE workspace_id = ?1`)
+					.bind(signed.actor.workspaceId)
+					.run();
+				if (ctx) ctx.waitUntil(clear);
+				else await clear;
+				return html(painted.paint);
+			}
 		}
 
 		if (request.method === "POST" && path === "/welcome") {
@@ -1362,10 +1378,20 @@ function renderDemoMessage(message: string): string {
 	});
 }
 
-async function openDemo(env: Env, origin: string): Promise<Response> {
+async function openDemo(env: Env, origin: string, ctx?: ExecutionContext): Promise<Response> {
 	try {
-		const opened = await createDemoCopy(env, origin);
+		const opened = await createDemoCopy(env, origin, new Date(), ctx);
 		if ("message" in opened) return html(renderDemoMessage(opened.message), 429);
+		const aliases = takeWarmedCopy(opened.workspaceId);
+		const home = new Request(new URL("/", origin), {
+			headers: { cookie: `stylebook=${encodeURIComponent(opened.secret)}` },
+		});
+		const rendered = await handleScreen(home, { ...env, WORKSPACE: aliasBinding(env.WORKSPACE, aliases) }, ctx);
+		if (rendered && rendered.status === 200) {
+			await env.DB.prepare(`UPDATE demo_copies SET paint = ?1 WHERE workspace_id = ?2`)
+				.bind(await rendered.text(), opened.workspaceId)
+				.run();
+		}
 		return redirect("/", { "Set-Cookie": keyCookie(opened.secret) });
 	} catch (error) {
 		const failure = describeError(error);

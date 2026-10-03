@@ -12,7 +12,7 @@ export function memoryD1(): D1Database {
 		db.exec(readFileSync(join(root, file), "utf8"));
 	}
 
-	return {
+	const database = {
 		prepare(sql: string) {
 			return {
 				bind(...values: unknown[]) {
@@ -42,5 +42,11 @@ export function memoryD1(): D1Database {
 				},
 			};
 		},
-	} as unknown as D1Database;
+		async batch(statements: { run: () => Promise<unknown> }[]) {
+			const results = [];
+			for (const statement of statements) results.push(await statement.run());
+			return results;
+		},
+	};
+	return database as unknown as D1Database;
 }
