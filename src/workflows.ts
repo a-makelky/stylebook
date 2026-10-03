@@ -6,6 +6,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import { insertArrival, toArrival } from "./arrivals";
 import { reconcilePush, type ReconcileResult } from "./audit";
 import type { Env } from "./env";
+import { mirrorKeptLibraries } from "./mirror";
 import { runSuggestionSession, type SessionParams, type SessionResult } from "./session";
 import { describeError } from "./redact";
 
@@ -45,6 +46,15 @@ export class ArrivalWorkflow extends WorkflowEntrypoint<Env> {
 				if (outcome === "confirmed") break;
 			}
 		}
+		// A library publish can also refresh a backup the Admin asked to keep
+		// current. Retries live in the send. This step records a plain error
+		// instead of failing the arrival.
+		// https://developers.cloudflare.com/artifacts/guides/build-and-deploy-on-push/
+		// https://developers.cloudflare.com/workflows/build/sleeping-and-retrying/
+		await step.do("back up the library", async () => {
+			await mirrorKeptLibraries(this.env, row.repoName, row.refName);
+			return { ok: true };
+		});
 		return { ...row, outcome };
 	}
 }

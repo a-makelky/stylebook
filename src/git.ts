@@ -5,6 +5,7 @@
 
 import git from "isomorphic-git";
 import http from "isomorphic-git/http/web";
+import { NO_CORS_PROXY } from "./git-http";
 import { MemoryFS } from "./memory-fs";
 
 export interface Author {
@@ -74,6 +75,7 @@ async function pushRef(
 		http,
 		dir: "/work",
 		url: remote,
+		corsProxy: NO_CORS_PROXY,
 		ref,
 		remoteRef: ref,
 		onAuth,
@@ -99,6 +101,7 @@ export async function publishSavedEdition(input: PublishInput): Promise<PublishO
 			http,
 			dir,
 			url: input.remote,
+			corsProxy: NO_CORS_PROXY,
 			ref: branch,
 			singleBranch: true,
 			depth: 1,
@@ -181,6 +184,7 @@ async function writeNote(
 		const listed = await git.listServerRefs({
 			http,
 			url: remote,
+			corsProxy: NO_CORS_PROXY,
 			onAuth,
 			headers: gitHeaders(),
 			protocolVersion: 1,
@@ -196,6 +200,7 @@ async function writeNote(
 			http,
 			dir: "/work",
 			url: remote,
+			corsProxy: NO_CORS_PROXY,
 			remoteRef: NOTES_REF,
 			singleBranch: true,
 			depth: 1,
@@ -250,6 +255,7 @@ export async function publishPrepared(input: {
 				http,
 				dir,
 				url: input.remote,
+				corsProxy: NO_CORS_PROXY,
 				ref: "main",
 				singleBranch: true,
 				depth: 1,

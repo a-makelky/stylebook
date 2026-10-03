@@ -47,4 +47,22 @@ export interface Env {
 	OAUTH_KV?: KVNamespace;
 	/** Set by the OAuth provider on each request. Not a binding. */
 	OAUTH_PROVIDER?: import("@cloudflare/workers-oauth-provider").OAuthHelpers;
+	/** Largest download, in bytes. Set in wrangler config. */
+	MAX_BACKUP_BYTES?: string;
+	/** Largest restore upload, in bytes. Set in wrangler config. */
+	MAX_BACKUP_UPLOAD_BYTES?: string;
+	/** Largest inflated Git object total a restore will accept. */
+	MAX_BACKUP_INFLATED_BYTES?: string;
+	/** Encrypts a backup secret for another service. A Worker secret. */
+	BACKUP_KEY?: string;
+	/** GitHub App id. A Worker secret, set once the app exists. */
+	GITHUB_APP_ID?: string;
+	/** GitHub App private key, PEM. A Worker secret. */
+	GITHUB_APP_PRIVATE_KEY?: string;
+	/** GitHub App slug, used for the install screen. A Worker secret. */
+	GITHUB_APP_SLUG?: string;
+	/** GitHub App client id. Different from the app id. A Worker secret. */
+	GITHUB_APP_CLIENT_ID?: string;
+	/** GitHub App client secret. A Worker secret. Never logged. */
+	GITHUB_APP_CLIENT_SECRET?: string;
 }

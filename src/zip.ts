@@ -112,3 +112,82 @@ export function zipStore(files: { name: string; data: Uint8Array }[]): Uint8Arra
 	out.set(end, cursor);
 	return out;
 }
+
+export interface ZipEntry {
+	name: string;
+	data: Uint8Array;
+}
+
+export const NOT_A_BACKUP = "This is not a Stylebook backup.";
+export const UPLOAD_TOO_BIG = "This backup is larger than Stylebook can restore.";
+
+export class ZipError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ZipError";
+	}
+}
+
+function safeZipName(name: string): boolean {
+	if (!name || name.length > 300) return false;
+	if (name.startsWith("/") || name.includes("\\") || name.includes("\0")) return false;
+	const parts = name.split("/");
+	return parts.every((part) => part !== "" && part !== ".." && part !== ".");
+}
+
+/**
+ * Read a stored zip. Refuses a name that climbs out of the folder, a compressed
+ * entry, and a total larger than `maxBytes`.
+ */
+export function unzipStore(bytes: Uint8Array, maxBytes: number, maxEntries = 10_000): ZipEntry[] {
+	if (bytes.byteLength < 22) throw new ZipError(NOT_A_BACKUP);
+	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	let end = -1;
+	const scanFrom = Math.max(0, bytes.byteLength - 22 - 65535);
+	for (let offset = bytes.byteLength - 22; offset >= scanFrom; offset--) {
+		if (view.getUint32(offset, true) === 0x06054b50) {
+			end = offset;
+			break;
+		}
+	}
+	if (end < 0) throw new ZipError(NOT_A_BACKUP);
+	const count = view.getUint16(end + 10, true);
+	const directorySize = view.getUint32(end + 12, true);
+	const directoryOffset = view.getUint32(end + 16, true);
+	if (count > maxEntries) throw new ZipError(UPLOAD_TOO_BIG);
+	if (directoryOffset + directorySize > bytes.byteLength) throw new ZipError(NOT_A_BACKUP);
+
+	const entries: ZipEntry[] = [];
+	let cursor = directoryOffset;
+	let total = 0;
+	const decoder = new TextDecoder();
+	for (let index = 0; index < count; index++) {
+		if (cursor + 46 > bytes.byteLength || view.getUint32(cursor, true) !== 0x02014b50) {
+			throw new ZipError(NOT_A_BACKUP);
+		}
+		const method = view.getUint16(cursor + 10, true);
+		const compressed = view.getUint32(cursor + 20, true);
+		const size = view.getUint32(cursor + 24, true);
+		const nameLength = view.getUint16(cursor + 28, true);
+		const extra = view.getUint16(cursor + 30, true);
+		const comment = view.getUint16(cursor + 32, true);
+		const localOffset = view.getUint32(cursor + 42, true);
+		const name = decoder.decode(bytes.subarray(cursor + 46, cursor + 46 + nameLength));
+		cursor += 46 + nameLength + extra + comment;
+		if (!safeZipName(name) || name.endsWith("/")) continue;
+		if (method !== 0 || compressed !== size) throw new ZipError(NOT_A_BACKUP);
+		if (localOffset + 30 > bytes.byteLength || view.getUint32(localOffset, true) !== 0x04034b50) {
+			throw new ZipError(NOT_A_BACKUP);
+		}
+		const localName = view.getUint16(localOffset + 26, true);
+		const localExtra = view.getUint16(localOffset + 28, true);
+		const start = localOffset + 30 + localName + localExtra;
+		const data = bytes.subarray(start, start + size);
+		if (start + size > bytes.byteLength) throw new ZipError(NOT_A_BACKUP);
+		if (crc32(data) !== view.getUint32(localOffset + 14, true)) throw new ZipError(NOT_A_BACKUP);
+		total += size;
+		if (total > maxBytes) throw new ZipError(UPLOAD_TOO_BIG);
+		entries.push({ name, data: data.slice() });
+	}
+	return entries;
+}

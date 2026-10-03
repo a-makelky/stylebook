@@ -1,0 +1,14 @@
+{
+  "name": "Stylebook",
+  "url": "https://stylebook.dev",
+  "public": false,
+  "redirect_url": "https://stylebook.dev/backups/github/setup",
+  "callback_urls": ["https://stylebook.dev/backups/github/callback"],
+  "setup_url": "https://stylebook.dev/backups/github/callback",
+  "setup_on_update": true,
+  "request_oauth_on_install": true,
+  "default_permissions": {
+    "contents": "write"
+  },
+  "default_events": []
+}
