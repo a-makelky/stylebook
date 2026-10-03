@@ -84,3 +84,39 @@ Consent, this commit's server:
 ![Consent, wide](2026-10-03-front-consent-wide.png)
 
 ![Consent, phone](2026-10-03-front-consent-phone.png)
+
+## Review pass
+
+Deployed again on 2026-10-03, after `origin/main` was already in the tree. Commit `aa31e83`. Worker version `6c2ca266-932f-4e12-8d9f-fb08f0347b97`. An earlier deploy the same afternoon, from the merge commit, put the backup and GitHub routes back on stylebook.dev before these fixes. `GET /health` returned 200. `GET /backups` with no session returned 401. `GET /backups/github/setup` returned 200 and named GitHub.
+
+`npx wrangler d1 migrations apply stylebook --remote` applied `0013_demo_ip.sql` (the connecting address on a demo copy). It reported 3 commands, success. `0011_demo_copies.sql` was not renamed. It is already recorded, and its `ALTER TABLE` is not safe to run again under another name.
+
+`npm run typecheck` and `npm test` passed (128 tests). `DEMO_KEY` was not changed.
+
+### Try the demo, again
+
+Three signed-out `POST /try` calls, then the library page with that session. Each page was 200 and showed suggestions, Publish, and "Ask an agent to combine them." The copies were separate.
+
+| Visit | Copy | Then the page | Together |
+| --- | --- | --- | --- |
+| 1 | 4781 ms | 86 ms | 4867 ms |
+| 2 | 5377 ms | 90 ms | 5467 ms |
+| 3 | 4145 ms | 116 ms | 4261 ms |
+
+Visits 1 and 3 were under five seconds. Visit 2 was not. The time is in making the copy. The page after that was under a fifth of a second.
+
+Copies opened since 14:00 UTC had usage rows: 72 forks, 144 gets, and 792 reads, across those copies. See [Artifacts pricing](https://developers.cloudflare.com/artifacts/platform/pricing/).
+
+The day's cap is 80 (`MAX_DEMO_COPIES_PER_DAY`). One connecting address is capped at 8 (`MAX_DEMO_COPIES_PER_IP_PER_DAY`). The address is `CF-Connecting-IP` only. A forwarded header is not used. Both caps are one insert, the same shape as a workspace start. The live host was not at either cap. The tests set each cap and the next try returns 429.
+
+### What a demo copy cannot do
+
+On one live copy, People, Connect, and Backups all showed "Not available in the demo. Start your own workspace to use this." People had no invite form and no new key. Connect had no tool steps. Backups still had Download, and no GitHub connect and no other-service form. Posting an invite stored nothing. Posting an other-service backup returned to Backups with that same sentence, and no backup row was stored.
+
+A person who is already signed in is sent to their workspace, and the session cookie is left as it is. That was checked in the tests. Live sign-in is Cloudflare Access, so this pass did not sign a second person in on the host.
+
+The first page reads the shared Demo library through a proxy that allows `readFile`, `log`, `readTree`, and `listFiles`. The generated binding types do not declare `listFiles`. Anything else throws. See the [Workers binding](https://developers.cloudflare.com/artifacts/api/workers-binding/).
+
+### Deletion, again
+
+One copy's expiry was set to `2000-01-01T00:00:00.000Z` before 14:06 UTC. At 14:18 UTC that row was gone, and so were its workspace, people, backup, and audit rows. The schedule is still `17 * * * *`. The same job removes `d` plus seven letters repos that no longer have a copy row. The shared Demo library is not one of those names. That sweep was checked in the tests.
