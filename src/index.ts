@@ -1,4 +1,5 @@
 import { handleAccess } from "./access";
+import { handleAdmin } from "./admin";
 import { listActors, registerActor, actorByKey, type ActorInput } from "./actors";
 import { seedOpenSuggestions } from "./demo-seed";
 import { handleMcp } from "./mcp";
@@ -77,6 +78,10 @@ export default {
 				const failure = describeError(error);
 				return json(sanitize({ ok: false, error: failure.message, code: failure.code }), 500);
 			}
+		}
+
+		if (url.pathname === "/admin") {
+			return (await handleAdmin(request, env, ctx)) ?? json({ ok: false, error: "Not found." }, 404);
 		}
 
 		const screen = await handleScreen(request, env, ctx);

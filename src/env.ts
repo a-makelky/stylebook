@@ -32,4 +32,14 @@ export interface Env {
 	MAX_SIGN_IN_EMAILS_PER_HOUR?: string;
 	MAX_SIGN_IN_EMAILS_PER_IP_PER_HOUR?: string;
 	MAX_SIGN_IN_EMAILS_GLOBAL_PER_HOUR?: string;
+	/** "access" (Cloudflare Access) or "link" (the email links kept in src/mail.ts). */
+	SIGN_IN?: string;
+	/** https://<team>.cloudflareaccess.com — set as a secret, not in the repo. */
+	TEAM_DOMAIN?: string;
+	/** Application Audience (AUD) tag. Set as a secret, not in the repo. */
+	POLICY_AUD?: string;
+	/** Comma-separated emails allowed to open /admin. A secret. Never written here. */
+	SERVICE_ADMINS?: string;
+	/** Test double: a JWKS JSON document. Production fetches the team certs URL. */
+	ACCESS_JWKS?: string;
 }

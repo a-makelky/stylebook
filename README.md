@@ -32,8 +32,8 @@ Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for
 
 Stylebook is hosted at [stylebook.dev](https://stylebook.dev). A writer opens that address in a browser. They do not need Cloudflare or a terminal.
 
-1. Start a workspace with a name and an email address. Stylebook sends a link from `sign-in@stylebook.dev`. It works once and expires in 15 minutes. Opening it asks you to confirm, and then lands on the library, which already holds the sample pages. The domain has to be onboarded for Email Service before a link can arrive. The run log records the current state of that.
-2. From People and agents, invite a colleague by email. Their link signs them into that same workspace. Everyone in the workspace can review and publish. The person who started the workspace can remove someone, which ends that person's sessions.
+1. Sign in. Stylebook asks Cloudflare Access for a one-time code to your email. A new address with no workspace can start one, or join from an invitation. The person who starts a workspace is an Admin. The older email-link sign-in is still in the project and switched off.
+2. From People, an Admin invites a colleague by email and picks Admin or Member. They join, with that role, the next time they sign in. Members suggest. An Admin publishes, unless Members can publish is on. The person who started the workspace cannot be removed or demoted.
 3. Connect an agent by giving it a name and picking the tool. The key is shown once, with a setup for Cursor or Claude Code and a setup for a folder on your computer. The agent's first suggestion then appears on the page. An agent can be renamed, and its key can be revoked.
 
 A workspace is one team. Its library, suggestions, people, agents and History stay inside it. Another workspace cannot see or change them.

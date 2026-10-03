@@ -443,7 +443,7 @@ describe("review screen", () => {
 		const agentPage = await fetch(`${origin}/`, { headers: { Authorization: `Bearer ${AGENT_KEY}` } });
 		const html = await agentPage.text();
 		assertClean(html);
-		expect(html).toContain("Locked");
+		expect(html).not.toContain('aria-label="Locked"');
 		const denied = await fetch(`${origin}/publish`, {
 			method: "POST",
 			headers: {
@@ -453,6 +453,7 @@ describe("review screen", () => {
 			body: `item=${encodeURIComponent(STARTER_SKILL_PATH)}&suggestion=desk-sug-pencil-001`,
 		});
 		expect(denied.status).toBe(403);
+		expect(await denied.text()).toContain("An agent cannot publish.");
 	});
 
 	it("reads a page of copies instead of every copy", async () => {
@@ -493,7 +494,7 @@ describe("review screen", () => {
 		const people = await fetch(`${origin}/people`, { headers: { Cookie: cookie } });
 		const page = await people.text();
 		assertClean(page);
-		expect(page).toContain("Invite a colleague");
+		expect(page).toContain("Send an invite");
 		expect(page).toContain("Connect an agent");
 
 		const connected = await fetch(`${origin}/agents`, {

@@ -309,7 +309,7 @@ describe("stock git through the route", () => {
 		await git(libraryDir, ["commit", "-m", "Try to publish"]);
 		await expectGitFailureArgs(
 			["-C", libraryDir, "push", "origin", "HEAD:main"],
-			"cannot change the library",
+			"cannot publish",
 		);
 		await expectGitFailure(remote(name, CODEX_KEY), "cannot open that copy");
 

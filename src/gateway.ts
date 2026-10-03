@@ -6,6 +6,8 @@
 
 import { grantByToken } from "./access";
 import { actorByKey, allows, ownerOf, refusal, type Actor } from "./actors";
+import { authorizeRepo } from "./roles";
+import { noteUsed } from "./teams";
 import { recordPush } from "./audit";
 import type { Env } from "./env";
 import { describeError } from "./redact";
@@ -130,7 +132,12 @@ export async function handleGit(request: Request, env: Env): Promise<Response> {
 	if (grant && (grant.repoName !== repoName || (writing && !grant.canWrite))) {
 		return text(403, refusal(repoName, writing));
 	}
+	if (writing) {
+		const decision = await authorizeRepo(env, caller, repoName, true);
+		if (!decision.ok) return text(403, decision.sentence);
+	}
 	if (!allows(caller, repoName, writing)) return text(403, refusal(repoName, writing));
+	if (caller.kind === "agent") await noteUsed(env, caller.id);
 
 	const scoped = scopedEnv(env, caller.workspaceId);
 	try {

@@ -32,7 +32,11 @@ Code, comments and this file may use the Git words. Users never see them.
 - `src/index.ts` — routes and the demo-key check
 - `src/workspace.ts` — library and suggestion copies over the Artifacts binding
 - `src/teams.ts` — workspaces, sessions, invites, and agent keys
-- `src/mail.ts` — one-time sign-in links
+- `src/mail.ts` — one-time sign-in links, kept and switched off
+- `src/identity.ts` — who is signing in; Cloudflare Access today
+- `src/permit.ts` — the one permission check
+- `src/roles.ts` — roles, invitations, locked pages, and the check's inputs
+- `src/admin.ts` — the service-admin page
 - `src/limits.ts` — starting limits
 - `src/usage.ts` — per-workspace operation counts
 - `src/git.ts` — writing an edition with isomorphic-git
