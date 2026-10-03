@@ -795,8 +795,9 @@ describe("roles on the screen, the Git route, and MCP", () => {
 		const gone = await fetch(`${origin}/`, { headers: { Cookie: spareCookie } });
 		const goneHtml = await gone.text();
 		expect(goneHtml).toContain("Sign in");
+		expect(goneHtml).toContain("Try the demo");
 		expect(goneHtml).not.toContain("Spare");
-		expect(goneHtml).not.toContain("Interview to draft");
+		expect(goneHtml).not.toContain("Sign out");
 		const auditRows = await db
 			.prepare(`SELECT action, actor_hash, detail FROM service_audit`)
 			.bind()

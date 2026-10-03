@@ -132,7 +132,7 @@ describe("the front door", () => {
 		expect(visible(html).match(BANNED)).toBeNull();
 		expect(html).toContain("Keep every name tied to the transcript.");
 		expect(html).toContain("Written by Researcher for Editor");
-		expect(html).toContain(">Publish<");
+		expect(html).toContain("Publish</button>");
 		expect(html).toContain("Ask an agent to combine them");
 		expect(html).not.toContain("Start here");
 		const name = suggestionFor(html, "Keep every name tied to the transcript.");
