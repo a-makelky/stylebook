@@ -82,19 +82,23 @@ When that id differs from `database_id` under `[[d1_databases]]` in `wrangler.to
 npx wrangler d1 migrations apply stylebook --remote
 ```
 
-The Workers binding addresses one namespace, chosen in `wrangler.toml`. Its methods take a repo name, not a namespace, so a team is a prefix on every repo (`{id}-library` and `{id}-sug-…`) in the namespace `stylebook`. A copy made with `fork()` stays in that namespace. If the namespace does not exist yet, Artifacts creates it when the first repo is created. See the [Workers binding](https://developers.cloudflare.com/artifacts/api/workers-binding/) and [Namespaces](https://developers.cloudflare.com/artifacts/concepts/namespaces/). Older namespaces named `stylebook-review` and `stylebook-demo` stay in the account and are not bound.
-
 The command asks before it applies. A session with no prompt continues.
 
-Sign-in from a tool stores its grants in Workers KV. Create a namespace and put its id on the `OAUTH_KV` binding. Leave the binding name as `OAUTH_KV`. The id in this file belongs to the hosted Stylebook account. See [KV](https://developers.cloudflare.com/workers/runtime-apis/kv/).
+The Workers binding addresses one namespace, chosen in `wrangler.toml`. Its methods take a repo name, not a namespace, so a team is a prefix on every repo (`{id}-library` and `{id}-sug-…`) in the namespace `stylebook`. A copy made with `fork()` stays in that namespace. If the namespace does not exist yet, Artifacts creates it when the first repo is created. See the [Workers binding](https://developers.cloudflare.com/artifacts/api/workers-binding/) and [Namespaces](https://developers.cloudflare.com/artifacts/concepts/namespaces/). Older namespaces named `stylebook-review` and `stylebook-demo` stay in the account and are not bound.
+
+Sign-in from a tool stores its grants in Workers KV. Create a namespace and put its id on the `OAUTH_KV` binding. Leave the binding name as `OAUTH_KV`. The id in this file belongs to the hosted Stylebook account. A second Worker that keeps that id shares the hosted namespace. See [KV](https://developers.cloudflare.com/workers/runtime-apis/kv/).
 
 ```sh
 npx wrangler kv namespace create OAUTH_KV
 ```
 
-`name` at the top of `wrangler.toml` is the Worker. Deploy updates the Worker of that name. The two `name` values under `[[workflows]]`, and `workflow_name` under the trigger, have to be unique in the account. Wrangler warns when one of those names already belongs to another Worker, and deploying reassigns it. Rename the three lines before you deploy if the names are taken. To run a second copy beside an existing one, change the Worker name, the database name and id, both namespace lines, and the three workflow lines.
+If Wrangler says a namespace with that title already exists, create one under another title. The snippet it prints uses that title as the binding name. Leave `binding = "OAUTH_KV"` and put the new id in the file.
 
-`wrangler.toml` attaches `stylebook.dev` as a [custom domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/). Delete the `[[routes]]` block before you deploy if that domain is not in your Cloudflare account. The deploy fails when the domain belongs to another account.
+`name` at the top of `wrangler.toml` is the Worker. Deploy updates the Worker of that name. The two `name` values under `[[workflows]]`, and `workflow_name` under the trigger, have to be unique in the account. Wrangler warns when one of those names already belongs to another Worker, and deploying reassigns it. Rename the three lines before you deploy if the names are taken.
+
+To run a second copy beside one that is already deployed, change the names before the first deploy. Use a new Worker name. Create the database under a new name, and do not point `database_id` at the database already in this file. Create a KV namespace under a new title. Change both `namespace` lines, the Artifacts binding and the push trigger. Rename the three workflow lines. Delete the `[[routes]]` block so the deploy does not target `stylebook.dev`.
+
+`wrangler.toml` attaches `stylebook.dev` as a [custom domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/). Delete the `[[routes]]` block before you deploy if that domain is not in your Cloudflare account, and also when this account already serves it from another Worker. You cannot create a custom domain on a hostname that already has a DNS record, or on a zone you do not own. The deploy fails when the domain belongs to another account.
 
 ```sh
 npx wrangler deploy
@@ -121,7 +125,9 @@ curl -X POST "$HOST/demo/seed" \
   -d "{\"personKey\":\"$PERSON_KEY\",\"researcherKey\":\"$RESEARCHER_KEY\",\"proofreaderKey\":\"$PROOFREADER_KEY\"}"
 ```
 
-Keep the three keys. The seed request can take about a minute. It opens a workspace named Demo. The library repo is `demo-library`. Open `$HOST` in a browser and sign in with the Editor address the seed records (`editor@stylebook.invalid`). The first page lists the newest suggestions. When more copies exist than fit on the page, it links to the older ones and does not read every copy.
+Keep the three keys. The seed request can take more than a minute. It opens a workspace named Demo. The library repo is `demo-library`. That workspace is what **Try the demo** copies. Open `$HOST` and use Try the demo. You are signed in as Editor of your own copy, and the first page lists the newest suggestions. When more copies exist than fit on the page, it links to the older ones and does not read every copy.
+
+The address recorded for that Editor is `editor@stylebook.invalid`. It is not a mailbox. With Access switched on, the page does not send a sign-in link, so that address cannot be used to open the workspace. The person key is the credential. A browser that sends it as the `stylebook` cookie opens the seeded Demo workspace itself. Git and MCP send the same key as `Authorization: Bearer`.
 
 The `workers.dev` hostname returns [error 1010](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/) for Python's default user agent. That refusal happens before the request reaches the Worker. `curl` and Git get through on that hostname. On `stylebook.dev` the same Python agent gets through. If a hostname you control returns 1010, [Browser Integrity Check](https://developers.cloudflare.com/waf/tools/browser-integrity-check/) is refusing the client. The commands below send `-A stylebook-live-run` so they do not depend on that check. Git sends its own user agent. The run log records what got through.
 
@@ -222,6 +228,10 @@ npm test            # local tests
 ```
 
 The tests do not need a Cloudflare account. They run the real publish code against a local Git server and a stand-in for the Artifacts binding, and once more inside the local Workers runtime. They show the code is sound. They do not show how the live service behaves.
+
+## Draft answers
+
+Draft text for the project vision, how Stylebook uses Cloudflare, and how to run it is in [`docs/submission/`](docs/submission/). Each file starts with "DRAFT. Not submitted."
 
 ## License
 
