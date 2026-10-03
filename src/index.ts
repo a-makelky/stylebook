@@ -2,6 +2,7 @@ import { handleAccess } from "./access";
 import { handleAdmin } from "./admin";
 import { listActors, registerActor, actorByKey, type ActorInput } from "./actors";
 import { seedOpenSuggestions } from "./demo-seed";
+import { deleteExpiredDemos } from "./demo-copy";
 import { handleConnect } from "./connect";
 import { handleMcp } from "./mcp";
 import { handleAuthorize, oauthFetch } from "./oauth";
@@ -339,5 +340,10 @@ export default {
 		const context = requestContext(ctx);
 		if (env.OAUTH_KV) return oauthFetch(request, env, context, appFetch);
 		return appFetch(request, env, context);
+	},
+	// Awaited so a failed deletion is retried.
+	// https://developers.cloudflare.com/workers/runtime-apis/handlers/scheduled/
+	async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+		await deleteExpiredDemos(env);
 	},
 } satisfies ExportedHandler<Env>;

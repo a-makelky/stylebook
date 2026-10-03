@@ -28,6 +28,7 @@ This table is the honest state of the code, not a roadmap.
 | Sign in with Cloudflare Access, Admin and Member, People | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-access-roles.md). |
 | Suspension on suggestion writes, admin page, second workspace, People | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-tracer-8-review.md). |
 | Connect your tools: sign in from the tool, skills, team connections | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-connect-tools.md). |
+| Landing page, Try the demo, first-run welcome | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-front-door.md). |
 | Download, back up, and restore a workspace | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-backups.md). GitHub backups wait on the app. |
 
 Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for a piece, treat that piece as unproven.
@@ -35,6 +36,8 @@ Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for
 ## Use it
 
 Stylebook is hosted at [stylebook.dev](https://stylebook.dev). A writer opens that address in a browser. They do not need Cloudflare or a terminal.
+
+The first page says what Stylebook is. Try the demo opens that person's own copy of the Demo workspace for a day, signed in as its Editor, so they can publish, decline and combine. Start a workspace is for a team that will keep using it.
 
 1. Sign in. Stylebook asks Cloudflare Access for a one-time code to your email. A new address with no workspace can start one, or join from an invitation. The person who starts a workspace is an Admin. The older email-link sign-in is still in the project and switched off.
 2. From People, an Admin invites a colleague by email and picks Admin or Member. They join, with that role, the next time they sign in. Members suggest. An Admin publishes, unless Members can publish is on. The person who started the workspace cannot be removed or demoted.
@@ -44,7 +47,7 @@ Stylebook is hosted at [stylebook.dev](https://stylebook.dev). A writer opens th
 
 A workspace is one team. Its library, suggestions, people, agents and History stay inside it. Another workspace cannot see or change them.
 
-When a limit is reached, the page says so in plain language. The starting limits are 40 workspaces, 2 per email address and 5 from one network per day, 25 people and 40 agents in one workspace, 200 open suggestions in one workspace, 5 sign-in emails per address per hour, 100 sign-in emails an hour in total, and 30 new tool sign-ins an hour from one network.
+When a limit is reached, the page says so in plain language. The starting limits are 40 workspaces, 2 per email address and 5 from one network per day, 25 people and 40 agents in one workspace, 200 open suggestions in one workspace, 5 sign-in emails per address per hour, 100 sign-in emails an hour in total, 30 new tool sign-ins an hour from one network, and 80 demo copies a day.
 
 ## Run it yourself
 

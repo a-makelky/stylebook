@@ -17,6 +17,7 @@ import { toolLabel } from "./catalog";
 import type { Env } from "./env";
 import { signInMode } from "./identity";
 import { limitsOf } from "./limits";
+import { DEMO_UNAVAILABLE, isDemoCopy } from "./permit";
 import { clientIp } from "./mail";
 import { handleMcp, type McpActorProps } from "./mcp";
 import { esc, page } from "./screen";
@@ -179,6 +180,11 @@ async function showConsent(request: Request, env: Env, oauth: OAuthHelpers, url:
 	}
 
 	const person = signed.actor;
+	if (await isDemoCopy(env.DB, person.workspaceId)) {
+		return html(
+			`<div class="sheet"><h1>Connect your tools</h1><p>${esc(DEMO_UNAVAILABLE)}</p></div>`,
+		);
+	}
 	const details = await oauth.describeConsent(authRequest);
 	const consent = await oauth.beginConsent(authRequest);
 	const registered = details.clientName.replace(/[\r\n]+/g, " ").trim().slice(0, 200);
@@ -204,7 +210,8 @@ async function showConsent(request: Request, env: Env, oauth: OAuthHelpers, url:
 		? `<p>This returns you to an app on your computer. Continue only if you just started from it.</p>`
 		: "";
 	const body = `<div class="sheet">
-      <h1 class="return">This returns you to ${esc(details.redirectHost)}</h1>
+      <h1>Connect ${esc(tool)} to ${esc(workspaceName)}?</h1>
+      <p class="return">This returns you to ${esc(details.redirectHost)}</p>
       <p>An app calling itself '${esc(registered)}' is asking. Only approve if you just added Stylebook to that app.</p>
       <p>${esc(tool)} (registered as ${esc(registered)}) will be able to read the ${esc(workspaceName)} library and suggest changes as <em>${esc(agentName)}</em>. It cannot publish.</p>
       ${published}
@@ -257,6 +264,7 @@ async function finishConsent(request: Request, env: Env, oauth: OAuthHelpers): P
 	if (String(form.get("workspace") ?? "") !== signed.actor.workspaceId) {
 		return plain("Approve this for the workspace you are in.", 403);
 	}
+	if (await isDemoCopy(env.DB, signed.actor.workspaceId)) return plain(DEMO_UNAVAILABLE, 403);
 	const approved = await oauth.approveConsent(request, handle, { scope: ["suggest"] });
 	const client = await oauth.lookupClient(approved.request.clientId);
 	const tool = toolLabel(client?.clientName || approved.request.clientId);

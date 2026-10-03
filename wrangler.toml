@@ -41,6 +41,10 @@ MAX_SIGN_IN_EMAILS_PER_HOUR = "5"
 MAX_SIGN_IN_EMAILS_PER_IP_PER_HOUR = "20"
 MAX_SIGN_IN_EMAILS_GLOBAL_PER_HOUR = "100"
 MAX_OAUTH_REGISTRATIONS_PER_IP_PER_HOUR = "30"
+# Try the demo. Each copy lasts 24 hours and is deleted by the hourly job.
+# One connecting address cannot use the whole day's copies.
+MAX_DEMO_COPIES_PER_DAY = "80"
+MAX_DEMO_COPIES_PER_IP_PER_DAY = "8"
 # Email links stay in the code. Access is the sign-in that runs.
 SIGN_IN = "access"
 # A download or a restore larger than this is refused with a plain message.
@@ -78,6 +82,12 @@ class_name = "SuggestionWorkflow"
 name = "stylebook-arrival"
 binding = "ARRIVALS"
 class_name = "ArrivalWorkflow"
+
+# Deletes demo copies after 24 hours. Hourly is enough for that lifetime.
+# A top-level [triggers] table, so this is not nested under the workflow above.
+# https://developers.cloudflare.com/workers/configuration/cron-triggers/
+[triggers]
+crons = ["17 * * * *"]
 
 # Namespace-wide: every push in the workspace, including copies created after
 # this deploy. Wrangler 4.147's config schema requires `targets` with

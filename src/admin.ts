@@ -81,6 +81,7 @@ async function lines(env: Env): Promise<WorkspaceLine[]> {
           WHERE g.workspace_id = w.id AND g.ref_name = 'refs/heads/main' AND g.repo_name LIKE w.id || '-sug-%') AS suggestions
      FROM workspaces w
      WHERE w.deleted_at IS NULL
+       AND NOT EXISTS (SELECT 1 FROM demo_copies d WHERE d.workspace_id = w.id)
      ORDER BY w.created_at`,
 	)
 		.bind()

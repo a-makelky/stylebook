@@ -1,0 +1,1 @@
+0011_demo_copies.sql keeps its name because that migration is already recorded in remote D1, and its ALTER TABLE is not safe to apply again under a new name.

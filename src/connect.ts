@@ -6,6 +6,7 @@ import { actorFromRequest, readCookie } from "./auth";
 import { displayServerName, skillZip, teamConnections } from "./catalog";
 import type { Env } from "./env";
 import { signInMode } from "./identity";
+import { DEMO_UNAVAILABLE, isDemoCopy } from "./permit";
 import { accountLine, esc, page } from "./screen";
 import { workspaceById } from "./teams";
 import { libraryName } from "./workspace";
@@ -44,6 +45,16 @@ export async function handleConnect(request: Request, env: Env): Promise<Respons
 			`<div class="sheet"><h1>Sign in</h1><p><a href="/">Send yourself a sign-in link</a> to connect a tool.</p></div>`,
 			401,
 		);
+	}
+	if (await isDemoCopy(env.DB, signed.actor.workspaceId)) {
+		if (!(request.method === "GET" && url.pathname === "/connect/skills.zip")) {
+			const workspace = await workspaceById(env.DB, signed.actor.workspaceId);
+			return html(
+				`<div class="sheet"><p class="meta"><a href="/">Library</a></p><h1>Connect your tools</h1><p>${esc(DEMO_UNAVAILABLE)}</p></div>`,
+				200,
+				accountLine(workspace?.name ?? "Workspace", signed.actor.role === "admin"),
+			);
+		}
 	}
 	if (request.method === "GET" && url.pathname === "/connect/skills.zip") {
 		const bytes = await skillZip(env, signed.actor.workspaceId);

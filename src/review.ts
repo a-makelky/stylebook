@@ -116,6 +116,10 @@ export interface Desk {
 	notice: string | null;
 	/** Set when older suggestions were not read on this load. */
 	more: string | null;
+	/** True on the first visits to a workspace someone just started. */
+	showWelcome: boolean;
+	/** True when the workspace has no suggestions on any page. */
+	noSuggestionsYet: boolean;
 }
 
 interface OpenSuggestion extends DeskSuggestion {
@@ -463,6 +467,10 @@ export async function loadDesk(
 		: [];
 	const history = await historyOf(env, editions, actor.workspaceId);
 	const current = editions[0];
+	const welcomeRow = await env.DB.prepare(`SELECT welcome_pending AS n FROM workspaces WHERE id = ?1`)
+		.bind(actor.workspaceId)
+		.first<{ n: number }>();
+	const openCount = await openSuggestionCount(env.DB, actor.workspaceId);
 	return {
 		actorName: actor.name,
 		workspaceName: workspace?.name ?? "Workspace",
@@ -483,6 +491,8 @@ export async function loadDesk(
 		history,
 		notice,
 		more: opened.moreBefore && chosenPath ? olderHref(chosenPath, opened.moreBefore) : null,
+		showWelcome: welcomeRow?.n === 1,
+		noSuggestionsYet: suggestions.length === 0 && openCount === 0,
 	};
 }
 

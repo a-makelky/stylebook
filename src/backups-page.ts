@@ -34,6 +34,7 @@ import { clientIp } from "./mail";
 import { cloneHistory, MIRROR_REF, runMirror } from "./mirror";
 import { plainDate } from "./review";
 import { describeError } from "./redact";
+import { DEMO_UNAVAILABLE, isDemoCopy } from "./permit";
 import { authorize, workspaceState } from "./roles";
 import { openSession, workspaceById } from "./teams";
 
@@ -265,6 +266,7 @@ export function renderBackups(input: {
 	canCreate: boolean;
 	githubProblem: string | null;
 	readOnly?: boolean;
+	unavailable?: boolean;
 }): string {
 	const when = plainDate(new Date().toISOString());
 	return `<div class="sheet backups">
@@ -278,15 +280,15 @@ export function renderBackups(input: {
       <label class="check" for="include-suggestions"><input id="include-suggestions" type="checkbox" name="suggestions" value="yes"> Include open suggestions</label>
       <button class="primary" type="submit">Download</button>
     </form>
-    ${input.readOnly ? readOnlyNote("Back up to GitHub") : githubBlock({
+    ${input.unavailable ? `<h2>Back up and restore</h2><p>${esc(DEMO_UNAVAILABLE)}</p>` : input.readOnly ? readOnlyNote("Back up to GitHub") : githubBlock({
 			configured: input.githubConfigured,
 			row: input.github,
 			choices: input.choices,
 			canCreate: input.canCreate,
 			problem: input.githubProblem,
 		})}
-    ${input.readOnly ? readOnlyNote("Back up to another service") : otherBlock(input.otherConfigured, input.other)}
-    ${input.readOnly ? readOnlyNote("Restore") : restoreBlock(input.githubConfigured && input.github?.installationId ? input.choices : null)}
+    ${input.unavailable ? "" : input.readOnly ? readOnlyNote("Back up to another service") : otherBlock(input.otherConfigured, input.other)}
+    ${input.unavailable ? "" : input.readOnly ? readOnlyNote("Restore") : restoreBlock(input.githubConfigured && input.github?.installationId ? input.choices : null)}
   </div>`;
 }
 
@@ -335,6 +337,7 @@ export async function handleBackups(request: Request, env: Env, layout: Layout):
 	const tone = url.searchParams.get("tone") === "error" ? "error" : "ok";
 	const state = await workspaceState(env.DB, signed.actor.workspaceId);
 	const readOnly = Boolean(state?.suspended);
+	const unavailable = await isDemoCopy(env.DB, signed.actor.workspaceId);
 
 	try {
 		if (request.method === "POST" && path !== "/backups/download") {
@@ -557,7 +560,7 @@ export async function handleBackups(request: Request, env: Env, layout: Layout):
 			let choices: GithubRepoChoice[] | null = null;
 			let canCreate = false;
 			let githubProblem: string | null = null;
-			if (!readOnly && githubReady(env) && github?.installationId) {
+			if (!readOnly && !unavailable && githubReady(env) && github?.installationId) {
 				const token = await githubInstallationToken(env, github.installationId);
 				const info = await githubInstallation(env, github.installationId);
 				canCreate = Boolean(info && canCreateRepository(info.permissions));
@@ -576,6 +579,7 @@ export async function handleBackups(request: Request, env: Env, layout: Layout):
 					canCreate,
 					githubProblem,
 					readOnly,
+					unavailable,
 				}),
 			);
 		}
@@ -593,6 +597,7 @@ export async function handleBackups(request: Request, env: Env, layout: Layout):
 				canCreate: false,
 				githubProblem: null,
 				readOnly,
+				unavailable,
 			}),
 			500,
 		);

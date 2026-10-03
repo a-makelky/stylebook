@@ -17,6 +17,13 @@ function roleId(workspaceId: string, role: string): string {
 	return `${workspaceId.replace(/[^a-z0-9]/g, "").slice(0, 8)}${role}`.slice(0, 24);
 }
 
+/** Repo names of the seeded suggestions, including the overlapping pair and the pair that combines. */
+export function seededSuggestionNames(workspaceId: string, path?: string): string[] {
+	return SEED_EDITS.filter((edit) => !path || edit.path === path).map((edit) =>
+		suggestionName(workspaceId, roleId(workspaceId, edit.agentId), edit.session),
+	);
+}
+
 interface SeedEdit {
 	agentId: string;
 	session: string;
@@ -30,7 +37,9 @@ function replaceOnce(text: string, from: string, to: string): string {
 	return text.replace(from, to);
 }
 
-const INTERVIEW = "skills/interview-to-draft/SKILL.md";
+/** The page the newest seeded suggestions change, so it is the first one a visitor reads. */
+export const DEMO_FIRST_PAGE = "skills/interview-to-draft/SKILL.md";
+const INTERVIEW = DEMO_FIRST_PAGE;
 const RESEARCH = "skills/research-brief/SKILL.md";
 const TRANSCRIPT = "skills/transcript-clean-up/SKILL.md";
 const FEATURE = "workflows/feature-article.md";

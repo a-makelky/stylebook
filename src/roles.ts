@@ -4,6 +4,7 @@ import { actorById, hashKey, type Actor } from "./actors";
 import type { Env } from "./env";
 import { limitsOf, type Limits } from "./limits";
 import {
+	isDemoCopy,
 	permit,
 	type Action,
 	type PermitResult,
@@ -137,6 +138,7 @@ export async function authorize(
 		starter: state.ownerId === actor.id,
 		targetStarter: Boolean(targetId && state.ownerId === targetId),
 		own: extra?.own ?? false,
+		demo: await isDemoCopy(env.DB, actor.workspaceId),
 	});
 }
 

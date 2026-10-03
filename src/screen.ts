@@ -29,6 +29,7 @@ import {
 	saveWorkspaceSettings,
 	workspaceById,
 } from "./teams";
+import { DEMO_UNAVAILABLE, isDemoCopy } from "./permit";
 import { authorize, invitationsForWorkspace, pendingInvitations, recordSignIn, setPageLock, workspaceState } from "./roles";
 import { scopedEnv } from "./usage";
 import { libraryName } from "./workspace";
@@ -36,7 +37,10 @@ import { describeError } from "./redact";
 import type { Env } from "./env";
 import { githubReturnMain, githubSetupMain, handleBackups, isBackupPath } from "./backups-page";
 import { icon } from "./icons";
-import type { ProofLine } from "./diff";
+import { proofLines, type ProofLine } from "./diff";
+import { aliasBinding, connectingIp, createDemoCopy, takeWarmedCopy } from "./demo-copy";
+import { SEED_EDITS } from "./demo-seed";
+import { SAMPLE_FILES } from "./sample-files";
 import {
 	cleanName,
 	cleanPath,
@@ -222,12 +226,25 @@ export function renderDesk(desk: Desk, suggestion: string | null): string {
 	const countLabel = count === 1 ? "1 suggestion" : `${count} suggestions`;
 	const cards =
 		desk.suggestions.length === 0
-			? `<p class="meta">No open suggestions for this page.</p>`
+			? desk.noSuggestionsYet
+				? `<p>No suggestions yet. A suggestion arrives when a person or an agent proposes a change. Invite someone, or connect an agent, and it shows up here for an editor to publish or decline.</p>`
+				: `<p class="meta">No open suggestions for this page.</p>`
 			: desk.suggestions.map((entry) => suggestionCard(desk, entry, entry.name === selected?.name)).join("");
+	const welcome = desk.showWelcome
+		? `<section class="welcome">
+      <h2>Start here</h2>
+      <ol class="steps">
+        <li>Read a skill.</li>
+        <li><a href="/people">Invite someone</a>.</li>
+        <li><a href="/connect">Connect an agent</a>.</li>
+      </ol>
+      <form method="post" action="/welcome"><button class="text" type="submit">Dismiss</button></form>
+    </section>`
+		: "";
 
 	return page({
 		account: accountLine(desk.workspaceName, desk.canLock),
-		main: `<div class="desk">
+		main: `${welcome}<div class="desk">
       <nav class="contents"><h2>${icon("library", true)} Library</h2>${contents}</nav>
       <article class="page">
         <h1>${esc(desk.title)}</h1>
@@ -258,7 +275,7 @@ export function accountLine(workspaceName: string, admin = false): string {
     <form method="post" action="/sign-out"><button class="text" type="submit">Sign out</button></form></div>`;
 }
 
-export function page(parts: { main: string; account?: string }): string {
+export function page(parts: { main: string; account?: string; foot?: string }): string {
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -365,7 +382,10 @@ export function page(parts: { main: string; account?: string }): string {
   .address { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 8px 0; }
   .address code, .steps code { font-family: inherit; overflow-wrap: anywhere; }
   h2.quiet { font-style: italic; font-weight: 400; color: var(--graphite); }
-  .sheet h1.return { overflow-wrap: anywhere; }
+  .sheet .return {
+    font-size: 22px; line-height: 1.3; font-weight: 600; color: var(--ink);
+    font-style: normal; overflow-wrap: anywhere; margin: 8px 0 16px;
+  }
   .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
   .bar input { width: auto; flex: 1; min-width: 12rem; margin: 0; }
   pre { white-space: pre-wrap; font: inherit; font-size: 16px; line-height: 1.5; margin: 8px 0 16px; }
@@ -404,6 +424,24 @@ export function page(parts: { main: string; account?: string }): string {
     gap: 8px; width: auto; margin: 0 0 8px;
   }
   .sheet label.check input { width: auto; min-height: 0; margin: 0; flex: 0 0 auto; }
+  .welcome { max-width: 1200px; margin: 0 auto; padding: 8px 24px 0; }
+  .welcome h2 { margin-top: 8px; }
+  .landing { max-width: 1100px; margin: 0 auto; padding: 8px 24px 32px; }
+  .promise { font-size: 22px; line-height: 1.3; font-weight: 500; max-width: 40rem; margin: 12px 0 0; }
+  .doors { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: center; margin: 24px 0 8px; }
+  .doors form { margin: 0; }
+  .quiet { color: var(--graphite); font-style: italic; display: inline-flex; align-items: center; min-height: 44px; }
+  .landing .skill-title {
+    font-size: 44px; line-height: 1.1; font-weight: 500; letter-spacing: -0.015em; margin: 0 0 8px;
+  }
+  .landing .desk .page { grid-column: 2; grid-row: 1; }
+  .landing .desk .suggestions { grid-column: 3; grid-row: 1; }
+  .landing .desk .contents { grid-column: 1; grid-row: 1; }
+  .contents [aria-current="page"] { color: var(--blue); }
+  .site-foot {
+    max-width: 1100px; margin: 0 auto; padding: 24px 24px 64px;
+    border-top: 1px solid var(--rule); color: var(--graphite); font-style: italic; font-size: 16px;
+  }
   .delete-workspace { border-top: 1px solid var(--rule); margin-top: 32px; padding-top: 8px; color: var(--red); }
   .delete-workspace h2, .delete-workspace p, .delete-workspace label, .delete-workspace button { color: var(--red); }
   @media (min-width: 641px) {
@@ -426,10 +464,13 @@ export function page(parts: { main: string; account?: string }): string {
     .page { order: 1; }
     .suggestions { order: 2; }
     .contents { order: 3; }
+    .landing, .site-foot, .welcome { padding-left: 16px; padding-right: 16px; }
   }
   @media (max-width: 640px) {
     .top { flex-direction: column; align-items: flex-start; }
     .account { margin-left: 0; }
+    .doors { flex-direction: column; align-items: stretch; }
+    .doors form, .doors button.primary, .doors button.secondary { width: 100%; }
   }
   @media (prefers-reduced-motion: reduce) {
     .settle .mark, .settle .caret, .settle .ring { color: var(--ink); text-decoration: none; font-style: normal; }
@@ -439,6 +480,7 @@ export function page(parts: { main: string; account?: string }): string {
 <body>
 <header>${parts.account ? `<div class="top"><p class="wordmark">Stylebook</p>${parts.account}</div>` : `<p class="wordmark">Stylebook</p>`}</header>
 ${parts.main}
+${parts.foot ?? ""}
 </body>
 </html>`;
 }
@@ -537,8 +579,9 @@ function renderPeople(
 	starter: boolean,
 	membersCanPublish: boolean,
 	links: boolean,
+	demo: boolean,
 ): string {
-	const note = message ? `<p class="${message.startsWith("Only an") || message.startsWith("An agent") || message.startsWith("The person") || message.startsWith("There is") || message.startsWith("That ") || message.startsWith("This ") || message.startsWith("Give ") || message.startsWith("Enter ") || message.startsWith("Type ") || message.startsWith("You cannot") ? "overlap" : "notice"}">${esc(message)}</p>` : "";
+	const note = message ? `<p class="${message.startsWith("Only an") || message.startsWith("An agent") || message.startsWith("The person") || message.startsWith("There is") || message.startsWith("That ") || message.startsWith("This ") || message.startsWith("Give ") || message.startsWith("Enter ") || message.startsWith("Type ") || message.startsWith("You cannot") || message.startsWith("Not available") ? "overlap" : "notice"}">${esc(message)}</p>` : "";
 	const shown = reveal
 		? `<p class="notice">This key for ${esc(reveal.name)} is shown once. Copy it now.</p>
        <p><code>${esc(reveal.key)}</code></p>
@@ -580,7 +623,7 @@ function renderPeople(
 		.join("");
 	const agentRows = agents
 		.map((agent) => {
-			const rename = agent.yours
+			const rename = agent.yours && !demo
 				? `<details class="rename"><summary>Rename</summary>
             <form method="post" action="/agents/rename" class="rename-form">${hidden("id", agent.id)}
               <label for="rename-${esc(agent.id)}">Name</label>
@@ -603,7 +646,9 @@ function renderPeople(
       </div>`;
 		})
 		.join("");
-	const invite = admin
+	const invite = demo
+		? `<h2>Invite</h2><p>${esc(DEMO_UNAVAILABLE)}</p>`
+		: admin
 		? `<h2>Invite</h2>
       <form method="post" action="/invite" class="invite-line">
         <label for="invite-email">Email
@@ -643,7 +688,9 @@ function renderPeople(
       </form>
     </section>`
 		: "";
-	const connect = `<h2>Connect your AI tools</h2>
+	const connect = demo
+		? ""
+		: `<h2>Connect your AI tools</h2>
       <p><a class="primary" href="/connect">Connect your AI tools</a></p>`;
 	return page({
 		account: accountLine(workspaceName, admin),
@@ -777,6 +824,8 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 		path === "/lock" ||
 		path === "/unlock" ||
 		path === "/enter" ||
+		path === "/try" ||
+		path === "/welcome" ||
 		path === "/join" ||
 		path === "/publish" ||
 		path === "/resolve" ||
@@ -911,6 +960,12 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 			return enterFromAccess(request, env, ctx as AccessRuntime | undefined);
 		}
 
+		if (request.method === "POST" && path === "/try") {
+			const already = await actorFromRequest(request, env);
+			if (already) return redirect("/");
+			return openDemo(request, env, url.origin, ctx);
+		}
+
 		if (request.method === "POST" && path === "/join") {
 			const held = await heldEmail(request, env);
 			if (!held) {
@@ -941,10 +996,40 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 		}
 		if (!signed) {
 			if (request.method === "GET" && path === "/") {
-				return html(signInMode(env) === "access" ? renderAccessGate() : renderGate(null));
+				const href = signInMode(env) === "access" ? "/enter" : "/sign-in";
+				return html(renderLanding(href));
+			}
+			if (request.method === "GET" && path === "/start") {
+				if (signInMode(env) === "access") return redirect("/enter");
+				return html(renderGate(null));
+			}
+			if (request.method === "GET" && path === "/sign-in") {
+				if (signInMode(env) === "access") return redirect("/enter");
+				return html(renderSignIn());
 			}
 			if (signInMode(env) === "access") return html(renderAccessGate(), 401);
 			return html(renderGate("Send yourself a sign-in link to open the library."), 401);
+		}
+
+		if (request.method === "GET" && path === "/") {
+			const painted = await env.DB.prepare(
+				`SELECT paint FROM demo_copies WHERE workspace_id = ?1 AND paint IS NOT NULL`,
+			)
+				.bind(signed.actor.workspaceId)
+				.first<{ paint: string }>();
+			if (painted?.paint) {
+				const clear = env.DB.prepare(`UPDATE demo_copies SET paint = NULL WHERE workspace_id = ?1`)
+					.bind(signed.actor.workspaceId)
+					.run();
+				if (ctx) ctx.waitUntil(clear);
+				else await clear;
+				return html(painted.paint);
+			}
+		}
+
+		if (request.method === "POST" && path === "/welcome") {
+			await env.DB.prepare(`UPDATE workspaces SET welcome_pending = 0 WHERE id = ?1`).bind(signed.actor.workspaceId).run();
+			return redirect("/");
 		}
 
 		if (
@@ -1184,7 +1269,8 @@ async function peoplePage(
 	reveal: { name: string; key: string } | null,
 ): Promise<Response> {
 	const state = await workspaceState(env.DB, actor.workspaceId);
-	const admin = (await authorize(env, actor, "invite")).ok;
+	const demo = await isDemoCopy(env.DB, actor.workspaceId);
+	const admin = (await authorize(env, actor, demo ? "lock" : "invite")).ok;
 	const actors = await listActors(env.DB, actor.workspaceId);
 	const people = actors
 		.filter((item) => item.kind === "person")
@@ -1211,7 +1297,7 @@ async function peoplePage(
 			lastUsed: item.lastUsedAt ?? null,
 			yours: item.ownerId === actor.id,
 		}));
-	const invites = admin ? await invitationsForWorkspace(env.DB, actor.workspaceId) : [];
+	const invites = admin && !demo ? await invitationsForWorkspace(env.DB, actor.workspaceId) : [];
 	return html(
 		renderPeople(
 			state?.name ?? "Workspace",
@@ -1224,8 +1310,134 @@ async function peoplePage(
 			state?.ownerId === actor.id,
 			state?.membersCanPublish ?? false,
 			signInMode(env) === "link",
+			demo,
 		),
 	);
+}
+
+const EXAMPLE_PATH = "skills/interview-to-draft/SKILL.md";
+
+function sampleTitle(path: string, text: string): string {
+	for (const line of text.split("\n")) {
+		if (line.startsWith("# ")) return line.slice(2).trim();
+	}
+	const base = path.split("/").pop() ?? path;
+	return base.replace(/\.[a-z]+$/i, "").replace(/[-_]/g, " ");
+}
+
+function sampleGroup(path: string): string {
+	if (path.startsWith("skills/")) return "Skills";
+	if (path.startsWith("workflows/")) return "Workflows";
+	return "Connections";
+}
+
+/** The landing example: one seeded suggestion, drawn with the same marks as the library. */
+function landingExample(): string {
+	const original = SAMPLE_FILES[EXAMPLE_PATH] ?? "";
+	const edit = SEED_EDITS.find((item) => item.session === "names" && item.path === EXAMPLE_PATH);
+	const edited = edit ? edit.apply(original) : original;
+	const groups = ["Skills", "Workflows", "Connections"];
+	const contents = groups
+		.map((group) => {
+			const items = Object.entries(SAMPLE_FILES).filter(([path]) => sampleGroup(path) === group);
+			if (items.length === 0) return "";
+			const links = items
+				.map(([path, text]) => {
+					const current = path === EXAMPLE_PATH ? ` aria-current="page"` : "";
+					return `<li><span${current}>${esc(sampleTitle(path, text))}</span></li>`;
+				})
+				.join("");
+			return `<h2>${esc(group)}</h2><ul>${links}</ul>`;
+		})
+		.join("");
+	const description = original
+		.split("\n")
+		.find((line) => line.startsWith("description:"))
+		?.slice("description:".length)
+		.trim();
+	return `<p class="meta">A skill from the library, with one suggestion.</p>
+    <div class="desk">
+      <article class="page">
+        <h2 class="skill-title">${esc(sampleTitle(EXAMPLE_PATH, original))}</h2>
+        ${description ? `<p class="lede">${esc(description)}</p>` : ""}
+        <div class="page-body">${renderLines(proofLines(original, edited, "blue", 1))}</div>
+      </article>
+      <aside class="suggestions">
+        <h2>${icon("suggestion", true)} Suggestions</h2>
+        <p class="meta">1 suggestion</p>
+        <article class="suggestion selected">
+          <p>${icon("suggestion", true)} <span class="ring blue">1</span> <span class="who">${esc(writtenBy("Researcher", "Editor"))}</span></p>
+          <p>${esc(edit?.why ?? "")}</p>
+        </article>
+      </aside>
+      <nav class="contents"><h2>${icon("library", true)} Library</h2>${contents}</nav>
+    </div>`;
+}
+
+export function renderLanding(signInHref: string): string {
+	return page({
+		main: `<main class="landing">
+      <h1 class="promise">A shared, versioned library of your team's AI skills, where people and agents suggest changes and an editor approves them.</h1>
+      <div class="doors">
+        <form method="get" action="/start"><button class="primary" type="submit">Start a workspace</button></form>
+        <form method="post" action="/try"><button class="secondary" type="submit">Try the demo</button></form>
+        <a class="quiet" href="${esc(signInHref)}">Sign in</a>
+      </div>
+      ${landingExample()}
+      <h2>How a team starts</h2>
+      <ol class="steps">
+        <li>Start a workspace.</li>
+        <li>Invite your team.</li>
+        <li>Connect your agents.</li>
+      </ol>
+    </main>`,
+		foot: `<footer class="site-foot"><p>Open source. Runs on Cloudflare. <a href="https://github.com/a-makelky/stylebook">The repository</a> is there for people who want it.</p></footer>`,
+	});
+}
+
+function renderSignIn(): string {
+	return page({
+		main: `<div class="sheet">
+      <h1>Sign in</h1>
+      <form method="post" action="/sign-in">
+        <label for="sign-email">Email</label>
+        <input id="sign-email" name="email" type="email" autocomplete="email" required>
+        <button class="primary" type="submit">Send a sign-in link</button>
+      </form>
+    </div>`,
+	});
+}
+
+function renderDemoMessage(message: string): string {
+	return page({
+		main: `<div class="sheet">
+      <h1>Try the demo</h1>
+      <p>${esc(message)}</p>
+      <p><a class="primary" href="/start">Start a workspace</a></p>
+    </div>`,
+	});
+}
+
+async function openDemo(request: Request, env: Env, origin: string, ctx?: ExecutionContext): Promise<Response> {
+	try {
+		const opened = await createDemoCopy(env, origin, new Date(), ctx, connectingIp(request));
+		if ("message" in opened) return html(renderDemoMessage(opened.message), 429);
+		const aliases = takeWarmedCopy(opened.workspaceId);
+		const home = new Request(new URL("/", origin), {
+			headers: { cookie: `stylebook=${encodeURIComponent(opened.secret)}` },
+		});
+		const rendered = await handleScreen(home, { ...env, WORKSPACE: aliasBinding(env.WORKSPACE, aliases) }, ctx);
+		if (rendered && rendered.status === 200) {
+			await env.DB.prepare(`UPDATE demo_copies SET paint = ?1 WHERE workspace_id = ?2`)
+				.bind(await rendered.text(), opened.workspaceId)
+				.run();
+		}
+		return redirect("/", { "Set-Cookie": keyCookie(opened.secret) });
+	} catch (error) {
+		const failure = describeError(error);
+		console.error(failure.code, failure.message);
+		return html(renderDemoMessage("The demo could not be opened. Try again."), 500);
+	}
 }
 
 function renderAccessGate(): string {
