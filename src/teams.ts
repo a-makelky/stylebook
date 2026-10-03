@@ -65,8 +65,11 @@ export async function workspaceById(db: D1Database, id: string): Promise<Workspa
 	return row ? { id: row.id, name: row.name, ownerId: row.owner_id } : null;
 }
 
+/** Demo copies expire and are not a team's workspace. */
+const COUNTED_WORKSPACES = `(SELECT COUNT(*) FROM workspaces w WHERE NOT EXISTS (SELECT 1 FROM demo_copies d WHERE d.workspace_id = w.id))`;
+
 export async function countWorkspaces(db: D1Database): Promise<number> {
-	const row = await db.prepare(`SELECT COUNT(*) AS n FROM workspaces`).bind().first<{ n: number }>();
+	const row = await db.prepare(`SELECT COUNT(*) AS n FROM workspaces w WHERE NOT EXISTS (SELECT 1 FROM demo_copies d WHERE d.workspace_id = w.id)`).bind().first<{ n: number }>();
 	return row?.n ?? 0;
 }
 
@@ -146,7 +149,7 @@ export async function reserveWorkspaceStart(
      SELECT ?1, ?2, ?3
      WHERE (SELECT COUNT(*) FROM workspace_starts WHERE email = ?1) < ?4
        AND (SELECT COUNT(*) FROM workspace_starts WHERE ip = ?2 AND started_at >= ?5) < ?6
-       AND (SELECT COUNT(*) FROM workspaces) + (SELECT COUNT(*) FROM workspace_starts WHERE workspace_id IS NULL) < ?7`,
+       AND ${COUNTED_WORKSPACES} + (SELECT COUNT(*) FROM workspace_starts WHERE workspace_id IS NULL) < ?7`,
 	)
 		.bind(email, ip, now, limits.workspacesPerEmail, dayStart, limits.workspacesPerIpPerDay, limits.workspaces)
 		.run();
@@ -182,7 +185,7 @@ export async function createWorkspace(env: Env, name: string): Promise<Workspace
 	const inserted = await env.DB.prepare(
 		`INSERT INTO workspaces (id, name, created_at)
      SELECT ?1, ?2, ?3
-     WHERE (SELECT COUNT(*) FROM workspaces) < ?4`,
+     WHERE ${COUNTED_WORKSPACES} < ?4`,
 	)
 		.bind(id, clean, now, limits.workspaces)
 		.run();
@@ -550,6 +553,7 @@ export async function finishWorkspaceStart(env: Env, email: string, name: string
 		.run();
 	person.role = "admin";
 	created.ownerId = person.id;
+	await env.DB.prepare(`UPDATE workspaces SET welcome_pending = 1 WHERE id = ?1`).bind(created.id).run();
 	return { joined: { actor: person, workspace: created, secret: await openSession(env.DB, person) } };
 }
 

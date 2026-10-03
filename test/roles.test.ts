@@ -306,7 +306,8 @@ describe("roles on the screen, the Git route, and MCP", () => {
 		const landingHtml = await landing.text();
 		expect(landingHtml).toContain("Sign in");
 		expect(landingHtml).toContain('href="/enter"');
-		expect(landingHtml).not.toContain("Interview to draft");
+		expect(landingHtml).toContain("Try the demo");
+		expect(landingHtml).not.toContain("Sign out");
 		const health = await fetch(`${origin}/health`);
 		expect(health.status).toBe(200);
 		const mcpOpen = await fetch(`${origin}/mcp`, {

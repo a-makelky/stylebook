@@ -52,6 +52,7 @@ Code, comments and this file may use the Git words. Users never see them.
 - `src/audit.ts` — gateway rows, and the push event that confirms or flags them
 - `src/tracer.ts` — the first end-to-end path: library, copy, read back
 - `src/edits.ts` — scripted changes the concurrent sessions apply
+- `src/demo-copy.ts` — a short-lived copy of the Demo workspace
 - `src/session.ts` — one suggestion session
 - `src/swarm.ts` — start many sessions at once and collect what came back
 - `src/workflows.ts` — the session Workflow, and the Workflow that records a push

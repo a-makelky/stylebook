@@ -204,7 +204,8 @@ async function showConsent(request: Request, env: Env, oauth: OAuthHelpers, url:
 		? `<p>This returns you to an app on your computer. Continue only if you just started from it.</p>`
 		: "";
 	const body = `<div class="sheet">
-      <h1 class="return">This returns you to ${esc(details.redirectHost)}</h1>
+      <h1>Connect ${esc(tool)} to ${esc(workspaceName)}?</h1>
+      <p class="return">This returns you to ${esc(details.redirectHost)}</p>
       <p>An app calling itself '${esc(registered)}' is asking. Only approve if you just added Stylebook to that app.</p>
       <p>${esc(tool)} (registered as ${esc(registered)}) will be able to read the ${esc(workspaceName)} library and suggest changes as <em>${esc(agentName)}</em>. It cannot publish.</p>
       ${published}

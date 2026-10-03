@@ -17,6 +17,11 @@ function roleId(workspaceId: string, role: string): string {
 	return `${workspaceId.replace(/[^a-z0-9]/g, "").slice(0, 8)}${role}`.slice(0, 24);
 }
 
+/** Repo names of the seeded suggestions, including the overlapping pair and the pair that combines. */
+export function seededSuggestionNames(workspaceId: string): string[] {
+	return SEED_EDITS.map((edit) => suggestionName(workspaceId, roleId(workspaceId, edit.agentId), edit.session));
+}
+
 interface SeedEdit {
 	agentId: string;
 	session: string;

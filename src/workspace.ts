@@ -264,7 +264,11 @@ export async function deleteWorkspaceRepos(workspace: Artifacts, workspaceId: st
 	const names = await listRepoNames(workspace);
 	for (const name of names) {
 		if (!repoInWorkspace(workspaceId, name)) continue;
-		await workspace.delete(name);
+		try {
+			await workspace.delete(name);
+		} catch (error) {
+			if (errorCode(error) !== "NOT_FOUND") throw error;
+		}
 	}
 }
 

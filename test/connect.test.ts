@@ -202,8 +202,16 @@ describe("sign in from a tool", () => {
 		const consent = await fetch(authorize, { headers: { Cookie: session }, redirect: "manual" });
 		expect(consent.status).toBe(200);
 		const consentHtml = await consent.text();
-		expect(visible(consentHtml)).toContain("This returns you to 127.0.0.1");
-		expect(consentHtml).toContain('<h1 class="return">This returns you to 127.0.0.1</h1>');
+		expect(visible(consentHtml)).toContain("Connect Claude to North?");
+		expect(consentHtml).toContain("<h1>Connect Claude to North?</h1>");
+		expect(consentHtml).toContain('<p class="return">This returns you to 127.0.0.1</p>');
+		const shown = visible(consentHtml);
+		const headingAt = shown.indexOf("Connect Claude to North?");
+		const hostAt = shown.indexOf("This returns you to 127.0.0.1");
+		const askingAt = shown.indexOf("An app calling itself");
+		expect(headingAt).toBeGreaterThan(-1);
+		expect(hostAt).toBeGreaterThan(headingAt);
+		expect(askingAt).toBeGreaterThan(hostAt);
 		expect(visible(consentHtml)).toContain(
 			"An app calling itself 'Claude' is asking. Only approve if you just added Stylebook to that app.",
 		);

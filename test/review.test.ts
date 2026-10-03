@@ -223,8 +223,11 @@ describe("review screen", () => {
 		expect(anon.status).toBe(200);
 		const signIn = await anon.text();
 		expect(signIn).toContain("Start a workspace");
-		expect(signIn).toContain("Send a sign-in link");
+		expect(signIn).toContain("Try the demo");
+		expect(signIn).not.toContain("Send a sign-in link");
 		expect(signIn).not.toContain("Stylebook key");
+		const startPage = await fetch(`${origin}/start`);
+		expect(await startPage.text()).toContain("Send a sign-in link");
 		assertClean(signIn);
 		expect(signIn).toContain("@media (max-width: 1099px)");
 		expect(signIn).toContain(".page { order: 1; }");

@@ -35,13 +35,15 @@ Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for
 
 Stylebook is hosted at [stylebook.dev](https://stylebook.dev). A writer opens that address in a browser. They do not need Cloudflare or a terminal.
 
+The first page says what Stylebook is. Try the demo opens that person's own copy of the Demo workspace for a day, signed in as its Editor, so they can publish, decline and combine. Start a workspace is for a team that will keep using it.
+
 1. Sign in. Stylebook asks Cloudflare Access for a one-time code to your email. A new address with no workspace can start one, or join from an invitation. The person who starts a workspace is an Admin. The older email-link sign-in is still in the project and switched off.
 2. From People, an Admin invites a colleague by email and picks Admin or Member. They join, with that role, the next time they sign in. Members suggest. An Admin publishes, unless Members can publish is on. The person who started the workspace cannot be removed or demoted.
 3. Open Connect your tools from the workspace menu. The page asks which tool you use, with Claude already selected. Copy the address, paste it in that tool, and sign in. Approving names the connection after the tool. On People it can be renamed, and Revoke ends it. Download skills, a folder on your computer, and the team's other servers are under More.
 
 A workspace is one team. Its library, suggestions, people, agents and History stay inside it. Another workspace cannot see or change them.
 
-When a limit is reached, the page says so in plain language. The starting limits are 40 workspaces, 2 per email address and 5 from one network per day, 25 people and 40 agents in one workspace, 200 open suggestions in one workspace, 5 sign-in emails per address per hour, 100 sign-in emails an hour in total, and 30 new tool sign-ins an hour from one network.
+When a limit is reached, the page says so in plain language. The starting limits are 40 workspaces, 2 per email address and 5 from one network per day, 25 people and 40 agents in one workspace, 200 open suggestions in one workspace, 5 sign-in emails per address per hour, 100 sign-in emails an hour in total, 30 new tool sign-ins an hour from one network, and 80 demo copies a day.
 
 ## Run it yourself
 
