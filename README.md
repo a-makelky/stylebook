@@ -24,7 +24,8 @@ This table is the honest state of the code, not a roadmap.
 | Who made each change and why | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-3.md). |
 | Review screen: compare, flag overlaps, publish | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-4.md). |
 | Pull the library with plain Git or over MCP | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-tracer-5.md). |
-| Workspaces, email sign-in, invites, and connecting an agent | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-teams.md). Sign-in email is not delivered until the domain is onboarded for Email Service. |
+| Workspaces, email sign-in, invites, and connecting an agent | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-teams.md). Email links stay in the code and are switched off. |
+| Sign in with Cloudflare Access, Admin and Member, People | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-access-roles.md). |
 
 Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for a piece, treat that piece as unproven.
 
