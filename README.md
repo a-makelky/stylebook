@@ -29,6 +29,7 @@ This table is the honest state of the code, not a roadmap.
 | Suspension on suggestion writes, admin page, second workspace, People | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-tracer-8-review.md). |
 | Connect your tools: sign in from the tool, skills, team connections | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-connect-tools.md). |
 | Landing page, Try the demo, first-run welcome | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-front-door.md). |
+| Download, back up, and restore a workspace | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-backups.md). GitHub backups wait on the app. |
 
 Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for a piece, treat that piece as unproven.
 
@@ -41,6 +42,8 @@ The first page says what Stylebook is. Try the demo opens that person's own copy
 1. Sign in. Stylebook asks Cloudflare Access for a one-time code to your email. A new address with no workspace can start one, or join from an invitation. The person who starts a workspace is an Admin. The older email-link sign-in is still in the project and switched off.
 2. From People, an Admin invites a colleague by email and picks Admin or Member. They join, with that role, the next time they sign in. Members suggest. An Admin publishes, unless Members can publish is on. The person who started the workspace cannot be removed or demoted.
 3. Open Connect your tools from the workspace menu. The page asks which tool you use, with Claude already selected. Copy the address, paste it in that tool, and sign in. Approving names the connection after the tool. On People it can be renamed, and Revoke ends it. Download skills, a folder on your computer, and the team's other servers are under More.
+4. Connect an agent by giving it a name and picking the tool. The key is shown once, with a setup for Cursor or Claude Code and a setup for a folder on your computer. The agent's first suggestion then appears on the page. An agent can be renamed, and its key can be revoked.
+5. An Admin opens Backups to download the workspace, back it up to GitHub or another service, or start a new workspace from a download. Members see that an Admin can do this. GitHub backups are not set up on this server yet. A backup over 20 MB is refused, and the page says so.
 
 A workspace is one team. Its library, suggestions, people, agents and History stay inside it. Another workspace cannot see or change them.
 

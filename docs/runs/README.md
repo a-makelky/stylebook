@@ -17,6 +17,7 @@ One file per live run, named `YYYY-MM-DD-<what>.md`. A run log is the evidence t
 | [2026-10-03-tracer-8-review.md](2026-10-03-tracer-8-review.md) | Suspension on suggestion writes, cross-site posts, the admin page, a second workspace, and the People page. |
 | [2026-10-03-connect-tools.md](2026-10-03-connect-tools.md) | Sign-in from a tool on stylebook.dev: one address, approve, a credited suggestion, and Revoke. |
 | [2026-10-03-front-door.md](2026-10-03-front-door.md) | The landing page, Try the demo, a first-run welcome, and the consent heading on stylebook.dev. |
+| [2026-10-03-backups.md](2026-10-03-backups.md) | Download, backup, and restore on stylebook.dev, including the review checks against a local stand-in. |
 
 ## What a run log contains
 

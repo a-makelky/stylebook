@@ -34,6 +34,7 @@ import { scopedEnv } from "./usage";
 import { libraryName } from "./workspace";
 import { describeError } from "./redact";
 import type { Env } from "./env";
+import { githubReturnMain, githubSetupMain, handleBackups, isBackupPath } from "./backups-page";
 import { icon } from "./icons";
 import { proofLines, type ProofLine } from "./diff";
 import { aliasBinding, createDemoCopy, takeWarmedCopy } from "./demo-copy";
@@ -241,7 +242,7 @@ export function renderDesk(desk: Desk, suggestion: string | null): string {
 		: "";
 
 	return page({
-		account: accountLine(desk.workspaceName),
+		account: accountLine(desk.workspaceName, desk.canLock),
 		main: `${welcome}<div class="desk">
       <nav class="contents"><h2>${icon("library", true)} Library</h2>${contents}</nav>
       <article class="page">
@@ -265,10 +266,11 @@ export function renderDesk(desk: Desk, suggestion: string | null): string {
 	});
 }
 
-export function accountLine(workspaceName: string): string {
+export function accountLine(workspaceName: string, admin = false): string {
 	// A div, not a paragraph: a form inside a paragraph is lifted out of it,
 	// which split the workspace name and Sign out onto opposite sides of the line.
-	return `<div class="account"><span>${esc(workspaceName)}</span><a href="/connect">Connect your tools</a><a href="/people">People</a>
+	const backups = admin ? `<a href="/backups">Backups</a>` : "";
+	return `<div class="account"><span>${esc(workspaceName)}</span><a href="/connect">Connect your tools</a><a href="/people">People</a>${backups}
     <form method="post" action="/sign-out"><button class="text" type="submit">Sign out</button></form></div>`;
 }
 
@@ -671,7 +673,10 @@ function renderPeople(
 	const deletion = starter
 		? `<section class="delete-workspace">
       <h2>Delete this workspace</h2>
-      <p>This removes the library, every suggestion, and everyone in the workspace.</p>
+      <p>This removes the library, every suggestion, and everyone in the workspace. A download keeps the library and History. People and agents are not included. A backup already on GitHub or another service is left where it is.</p>
+      <form method="post" action="/backups/download">
+        <button class="text" type="submit">Download first</button>
+      </form>
       <form method="post" action="/workspace/delete">
         <label for="delete-name">Type the workspace name</label>
         <input id="delete-name" name="name" autocomplete="off" required>
@@ -682,7 +687,7 @@ function renderPeople(
 	const connect = `<h2>Connect your AI tools</h2>
       <p><a class="primary" href="/connect">Connect your AI tools</a></p>`;
 	return page({
-		account: accountLine(workspaceName),
+		account: accountLine(workspaceName, admin),
 		main: `<div class="sheet people">
       <p class="meta"><a href="/">Library</a></p>
       <h1>People</h1>
@@ -820,10 +825,29 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 		path === "/resolve" ||
 		path === "/decline" ||
 		path === "/suggestion" ||
+		isBackupPath(path) ||
 		Boolean(link);
 	if (!screen) return null;
 
 	try {
+		if (request.method === "GET" && path === "/backups/github/setup") {
+			return html(page({ main: githubSetupMain(url.searchParams.get("code")) }), 200, {
+				"Referrer-Policy": "no-referrer",
+				"Cache-Control": "no-store",
+			});
+		}
+
+		// GitHub sends the browser here from another site. A SameSite=Strict
+		// session cookie is not included on that navigation, so this page only
+		// shows a button. The connection is finished by the POST, which is
+		// same-site and does send the cookie.
+		if (request.method === "GET" && path === "/backups/github/callback") {
+			return html(page({ main: githubReturnMain(url.searchParams) }), 200, {
+				"Referrer-Policy": "no-referrer",
+				"Cache-Control": "no-store",
+			});
+		}
+
 		if (link && signInMode(env) === "access") return html(renderAccessGate(), 404);
 
 		if (link && (request.method === "GET" || request.method === "POST")) {
@@ -956,6 +980,12 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 		}
 
 		const signed = await actorFromRequest(request, env);
+		if (signed && isBackupPath(path)) {
+			const response = await handleBackups(request, env, (name, main, status = 200, admin = false) =>
+				html(page({ main, account: accountLine(name, admin) }), status),
+			);
+			if (response) return response;
+		}
 		if (!signed) {
 			if (request.method === "GET" && path === "/") {
 				const href = signInMode(env) === "access" ? "/enter" : "/sign-in";

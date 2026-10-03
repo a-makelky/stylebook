@@ -249,7 +249,7 @@ async function connectPage(request: Request, env: Env, person: Actor, url: URL):
 	const workspace = await workspaceById(env.DB, person.workspaceId);
 	const headers = new Headers();
 	if (url.searchParams.get("tool") === selected) headers.append("Set-Cookie", toolCookie(selected, url.protocol === "https:"));
-	return html(body, 200, accountLine(workspace?.name ?? "Workspace"), headers);
+	return html(body, 200, accountLine(workspace?.name ?? "Workspace", person.role === "admin"), headers);
 }
 
 function otherTools(): Response {

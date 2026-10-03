@@ -33,7 +33,7 @@ Code, comments and this file may use the Git words. Users never see them.
 - `src/oauth.ts` — sign-in from a tool, on `/mcp`
 - `src/connect.ts` — the Connect page
 - `src/catalog.ts` — skills, workflows, and team connections read from the library
-- `src/zip.ts` — the skill-folder download
+- `src/zip.ts` — stored zip for a skill folder, a download, and a restore
 - `src/workspace.ts` — library and suggestion copies over the Artifacts binding
 - `src/teams.ts` — workspaces, sessions, invites, and agent keys
 - `src/mail.ts` — one-time sign-in links, kept and switched off
@@ -57,6 +57,14 @@ Code, comments and this file may use the Git words. Users never see them.
 - `src/swarm.ts` — start many sessions at once and collect what came back
 - `src/workflows.ts` — the session Workflow, and the Workflow that records a push
 - `src/arrivals.ts` — the push event turned into one arrival row
+- `src/backup.ts` — download a workspace and start a new one from that download
+- `src/backups-page.ts` — the Backups page
+- `src/mirror.ts` — send a library to a backup, only to the stylebook ref
+- `src/backup-store.ts` — audit rows and the saved backup link
+- `src/backup-crypto.ts` — encrypt a backup secret with a Worker secret
+- `src/github-app.ts` — GitHub App install, short-lived tokens, private repositories
+- `src/git-http.ts` — Git HTTP that does not follow a redirect or a proxy
+- `src/backup-git.ts` — which backup files a restore keeps, and the inflate budget
 - `test/` — local tests, a local Git server, and a stand-in for the binding
 - `docs/runs/` — run logs from live runs
 
