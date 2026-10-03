@@ -226,8 +226,10 @@ export function renderDesk(desk: Desk, suggestion: string | null): string {
 }
 
 function accountLine(workspaceName: string): string {
-	return `<p class="account"><span>${esc(workspaceName)}</span><a href="/people">People and agents</a>
-    <form method="post" action="/sign-out"><button class="text" type="submit">Sign out</button></form></p>`;
+	// A div, not a paragraph: a form inside a paragraph is lifted out of it,
+	// which split the workspace name and Sign out onto opposite sides of the line.
+	return `<div class="account"><span>${esc(workspaceName)}</span><a href="/people">People and agents</a>
+    <form method="post" action="/sign-out"><button class="text" type="submit">Sign out</button></form></div>`;
 }
 
 function page(parts: { main: string; account?: string }): string {
@@ -262,9 +264,9 @@ function page(parts: { main: string; account?: string }): string {
   header:has(.top) { padding-left: 0; padding-right: 0; }
   .account {
     display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px;
-    margin: 0; color: var(--graphite); font-style: italic; font-size: 16px; line-height: 1.5;
+    margin: 0 0 0 auto; color: var(--graphite); font-style: italic; font-size: 16px; line-height: 1.5;
   }
-  .account a, .account button.text { color: var(--graphite); font-size: 16px; font-style: italic; }
+  .account a, .account button.text { color: var(--graphite); font-size: 16px; font-style: italic; min-height: 0; }
   .account form { margin: 0; }
   .desk {
     display: grid;
@@ -336,6 +338,7 @@ function page(parts: { main: string; account?: string }): string {
   }
   @media (max-width: 640px) {
     .top { flex-direction: column; align-items: flex-start; }
+    .account { margin-left: 0; }
   }
   @media (prefers-reduced-motion: reduce) {
     .settle .mark, .settle .caret, .settle .ring { color: var(--ink); text-decoration: none; font-style: normal; }
