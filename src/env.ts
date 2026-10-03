@@ -42,4 +42,8 @@ export interface Env {
 	SERVICE_ADMINS?: string;
 	/** Test double: a JWKS JSON document. Production fetches the team certs URL. */
 	ACCESS_JWKS?: string;
+	/** OAuth grants for sign-in from a tool. Absent in tests that keep bearer keys only. */
+	OAUTH_KV?: KVNamespace;
+	/** Set by the OAuth provider on each request. Not a binding. */
+	OAUTH_PROVIDER?: import("@cloudflare/workers-oauth-provider").OAuthHelpers;
 }

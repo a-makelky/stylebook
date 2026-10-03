@@ -495,7 +495,7 @@ describe("review screen", () => {
 		const page = await people.text();
 		assertClean(page);
 		expect(page).toContain("Send an invite");
-		expect(page).toContain("Connect an agent");
+		expect(page).toContain("Connect your AI tools");
 
 		const connected = await fetch(`${origin}/agents`, {
 			method: "POST",

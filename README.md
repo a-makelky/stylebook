@@ -27,6 +27,7 @@ This table is the honest state of the code, not a roadmap.
 | Workspaces, email sign-in, invites, and connecting an agent | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-teams.md). Email links stay in the code and are switched off. |
 | Sign in with Cloudflare Access, Admin and Member, People | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-access-roles.md). |
 | Suspension on suggestion writes, admin page, second workspace, People | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-tracer-8-review.md). |
+| Connect your tools: sign in from the tool, skills, team connections | Local tests and pictures on 2026-10-03. Not deployed: Wrangler has no login on this run. See [the run log](docs/runs/2026-10-03-connect-tools.md). |
 
 Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for a piece, treat that piece as unproven.
 
@@ -36,7 +37,7 @@ Stylebook is hosted at [stylebook.dev](https://stylebook.dev). A writer opens th
 
 1. Sign in. Stylebook asks Cloudflare Access for a one-time code to your email. A new address with no workspace can start one, or join from an invitation. The person who starts a workspace is an Admin. The older email-link sign-in is still in the project and switched off.
 2. From People, an Admin invites a colleague by email and picks Admin or Member. They join, with that role, the next time they sign in. Members suggest. An Admin publishes, unless Members can publish is on. The person who started the workspace cannot be removed or demoted.
-3. Connect an agent by giving it a name and picking the tool. The key is shown once, with a setup for Cursor or Claude Code and a setup for a folder on your computer. The agent's first suggestion then appears on the page. An agent can be renamed, and its key can be revoked.
+3. Open Connect your tools from the workspace menu. Each tool has one step: paste the address and sign in, or one click, or one line to paste. Approving names the connection after the tool. On People it can be renamed, and Revoke ends it. A setup for other tools is behind Other tools.
 
 A workspace is one team. Its library, suggestions, people, agents and History stay inside it. Another workspace cannot see or change them.
 
@@ -140,7 +141,7 @@ An agent that may write its own copy can push to `https://stylebook:<agent-key>@
 
 ### MCP
 
-The endpoint is `$HOST/mcp`. It speaks JSON-RPC over HTTP, the streamable HTTP shape described in [Cloudflare's MCP transport notes](https://developers.cloudflare.com/agents/model-context-protocol/protocol/transport/). Send the agent's Stylebook key as `Authorization: Bearer`. These tools are available:
+The endpoint is `$HOST/mcp`. It speaks JSON-RPC over HTTP, the streamable HTTP shape described in [Cloudflare's MCP transport notes](https://developers.cloudflare.com/agents/model-context-protocol/protocol/transport/). A tool that supports remote MCP with sign-in uses that address and the [Workers OAuth Provider](https://github.com/cloudflare/workers-oauth-provider). The person signs in with Cloudflare Access, the same way they open Stylebook, then approves. Tools without sign-in still send a Stylebook key as `Authorization: Bearer`. These tools are available:
 
 | Tool | What it does |
 | --- | --- |
@@ -148,6 +149,10 @@ The endpoint is `$HOST/mcp`. It speaks JSON-RPC over HTTP, the streamable HTTP s
 | `read_item` | Read one page. Argument: `path` |
 | `suggest_change` | Save a suggestion on that agent's own copy. Arguments: `path`, `content`, `why`, and an optional `session` |
 | `list_suggestions` | List open suggestions for one page, newest first. Argument: `path` |
+| `get_skill` | Read one skill or workflow by name, for a tool that has neither prompts nor resources |
+| `list_team_connections` | List the addresses in `connections/servers.json`. No credentials |
+
+Skills and workflows are also MCP prompts and resources. `GET /connect/skills.zip` downloads the skill folders.
 
 A change suggested here is saved the same way as a change pushed with Git: the Worker checks the key and forwards the write.
 

@@ -383,7 +383,7 @@ describe("roles on the screen, the Git route, and MCP", () => {
 		expect(memberHome).not.toContain("Change role");
 		expect(memberHome).not.toContain(">Invite<");
 		expect(memberHome).not.toContain("Members can publish");
-		expect(memberHome).toContain("Connect an agent");
+		expect(memberHome).toContain("Connect your AI tools");
 
 		const again = await enter(STARTER);
 		expect(again.status).toBe(303);

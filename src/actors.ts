@@ -20,6 +20,7 @@ export interface Actor {
 	role?: PersonRole | null;
 	createdAt?: string | null;
 	lastUsedAt?: string | null;
+	clientVersion?: string | null;
 }
 
 export interface ActorInput {
@@ -56,9 +57,10 @@ interface ActorRow {
 	role: string | null;
 	created_at: string | null;
 	last_used_at: string | null;
+	client_version: string | null;
 }
 
-const ACTOR_COLUMNS = `id, kind, name, owner_id, model, workspace_id, email, removed_at, role, created_at, last_used_at`;
+const ACTOR_COLUMNS = `id, kind, name, owner_id, model, workspace_id, email, removed_at, role, created_at, last_used_at, client_version`;
 
 function rowToActor(row: ActorRow): Actor | null {
 	if (!row.workspace_id) return null;
@@ -74,6 +76,7 @@ function rowToActor(row: ActorRow): Actor | null {
 		role: row.role === "admin" ? "admin" : row.kind === "person" ? "member" : null,
 		createdAt: row.created_at,
 		lastUsedAt: row.last_used_at,
+		clientVersion: row.client_version,
 	};
 }
 
@@ -89,7 +92,7 @@ export async function actorByKey(db: D1Database, key: string): Promise<Actor | n
 	const hash = await hashKey(key);
 	const row = await db
 		.prepare(
-			`SELECT a.id, a.kind, a.name, a.owner_id, a.model, a.workspace_id, a.email, a.removed_at, a.role, a.created_at, a.last_used_at
+			`SELECT a.id, a.kind, a.name, a.owner_id, a.model, a.workspace_id, a.email, a.removed_at, a.role, a.created_at, a.last_used_at, a.client_version
        FROM actor_keys k
        JOIN actors a ON a.id = k.actor_id
        WHERE k.key_hash = ?1 AND a.removed_at IS NULL`,
@@ -229,6 +232,12 @@ export async function registerActor(db: D1Database, input: ActorInput): Promise<
 		throw new Error("That actor already belongs to another workspace.");
 	}
 	return stored;
+}
+
+export async function setClientVersion(db: D1Database, actorId: string, version: string): Promise<void> {
+	const clean = version.replace(/[\r\n]+/g, " ").trim().slice(0, 40);
+	if (!clean) return;
+	await db.prepare(`UPDATE actors SET client_version = ?1 WHERE id = ?2`).bind(clean, actorId).run();
 }
 
 /** The person an actor works for. A person is their own owner. */

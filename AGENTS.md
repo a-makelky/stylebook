@@ -30,6 +30,10 @@ Code, comments and this file may use the Git words. Users never see them.
 ## Layout
 
 - `src/index.ts` — routes and the demo-key check
+- `src/oauth.ts` — sign-in from a tool, on `/mcp`
+- `src/connect.ts` — the Connect page
+- `src/catalog.ts` — skills, workflows, and team connections read from the library
+- `src/zip.ts` — the skill-folder download
 - `src/workspace.ts` — library and suggestion copies over the Artifacts binding
 - `src/teams.ts` — workspaces, sessions, invites, and agent keys
 - `src/mail.ts` — one-time sign-in links, kept and switched off

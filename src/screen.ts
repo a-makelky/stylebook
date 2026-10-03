@@ -1,7 +1,7 @@
 // The review screen. One page: the library, the open suggestions, and history.
 // Words on this page follow design/README.md.
 
-import { actorFromRequest, chooseCookie, clearChooseCookie, clearCookie, clearSeenCookie, keyCookie, readCookie, seenCookie, CHOOSE_COOKIE, SEEN_COOKIE, signOut } from "./auth";
+import { actorFromRequest, chooseCookie, clearChooseCookie, clearCookie, clearReturnCookie, clearSeenCookie, keyCookie, readCookie, RETURN_COOKIE, safeReturnPath, seenCookie, CHOOSE_COOKIE, SEEN_COOKIE, signOut } from "./auth";
 import { accessLogoutUrl, signInMode, verifiedEmail, type AccessRuntime } from "./identity";
 import { listActors } from "./actors";
 import { clientIp, issueSignInLink, normalizeEmail, peekLink, rememberLink, SENT, SIGN_IN_ACK, takeLink } from "./mail";
@@ -45,11 +45,12 @@ import {
 	loadDesk,
 	publishSuggestion,
 	saveAgentSuggestion,
+	writtenBy,
 	type Desk,
 	type DeskSuggestion,
 } from "./review";
 
-function esc(value: string): string {
+export function esc(value: string): string {
 	return value
 		.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")
@@ -165,7 +166,7 @@ function suggestionCard(desk: Desk, suggestion: DeskSuggestion, selected: boolea
 			: "";
 	return `<article class="suggestion${selected ? " selected" : ""}">
     <a href="${href}">${icon("suggestion", true)} <span class="ring ${suggestion.combined ? "green" : selected ? "blue" : ""}">${suggestion.number}</span>
-      <span class="who">Written by ${esc(suggestion.writer)} for ${esc(suggestion.owner)}</span></a>
+      <span class="who">${esc(writtenBy(suggestion.writer, suggestion.owner))}</span></a>
     <p>${esc(suggestion.why)}</p>
     ${ways}
     <div class="actions">${publish}</div>
@@ -248,14 +249,14 @@ export function renderDesk(desk: Desk, suggestion: string | null): string {
 	});
 }
 
-function accountLine(workspaceName: string): string {
+export function accountLine(workspaceName: string): string {
 	// A div, not a paragraph: a form inside a paragraph is lifted out of it,
 	// which split the workspace name and Sign out onto opposite sides of the line.
-	return `<div class="account"><span>${esc(workspaceName)}</span><a href="/people">People</a>
+	return `<div class="account"><span>${esc(workspaceName)}</span><a href="/connect">Connect your tools</a><a href="/people">People</a>
     <form method="post" action="/sign-out"><button class="text" type="submit">Sign out</button></form></div>`;
 }
 
-function page(parts: { main: string; account?: string }): string {
+export function page(parts: { main: string; account?: string }): string {
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -470,7 +471,7 @@ function setupMarkup(origin: string, workspaceId: string, key: string): string {
 	);
 	const folder = `git clone https://stylebook:${key}@${host}/git/${libraryName(workspaceId)}.git library`;
 	return `<h2>For Cursor or Claude Code</h2>
-    <p>Paste this where that tool keeps its connections. The key is in the header.</p>
+    <p>Paste this where that tool keeps its connections.</p>
     <pre data-setup>${esc(mcp)}</pre>
     <h2>For a folder on your computer</h2>
     <p>Paste this to read the library. Saving a suggestion uses the same key.</p>
@@ -628,18 +629,8 @@ function renderPeople(
       </form>
     </section>`
 		: "";
-	const connect = `<h2>Connect an agent</h2>
-      <form method="post" action="/agents">
-        <label for="agent-name">Name</label>
-        <input id="agent-name" name="name" required placeholder="Claude, working for me">
-        <label for="tool">Tool</label>
-        <select id="tool" name="tool">
-          <option value="cursor">Cursor</option>
-          <option value="claude">Claude Code</option>
-          <option value="other">Another tool</option>
-        </select>
-        <button class="primary" type="submit">Connect</button>
-      </form>`;
+	const connect = `<h2>Connect your AI tools</h2>
+      <p><a class="primary" href="/connect">Connect your AI tools</a></p>`;
 	return page({
 		account: accountLine(workspaceName),
 		main: `<div class="sheet people">
@@ -797,7 +788,7 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 			if ("choose" in joined) {
 				return html(renderChoose(joined.choose.workspaces), 200, { "Set-Cookie": chooseCookie(joined.choose.secret) });
 			}
-			return redirectCookies("/", [keyCookie(joined.joined.secret), clearChooseCookie()]);
+			return signedInRedirect(request, [keyCookie(joined.joined.secret), clearChooseCookie()]);
 		}
 
 		if (request.method === "POST" && path === "/start" && signInMode(env) === "access") {
@@ -814,7 +805,7 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 				return html(renderArrived(started.message), 400);
 			}
 			await takeLink(env, readCookie(request, SEEN_COOKIE) ?? "");
-			return redirectCookies("/", [keyCookie(started.joined.secret), clearSeenCookie()]);
+			return signedInRedirect(request, [keyCookie(started.joined.secret), clearSeenCookie()]);
 		}
 
 		if (request.method === "POST" && path === "/start") {
@@ -857,7 +848,7 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 			if (!taken || taken.purpose !== "choose") return html(renderGate("That link has expired or was already used."), 400);
 			const joined = await chooseWorkspace(env, taken.email, workspaceId);
 			if ("message" in joined) return html(renderGate(joined.message), 400);
-			return redirectCookies("/", [keyCookie(joined.secret), clearChooseCookie()]);
+			return signedInRedirect(request, [keyCookie(joined.secret), clearChooseCookie()]);
 		}
 
 		if (request.method === "GET" && path === "/choose") {
@@ -905,7 +896,7 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 				return html(renderArrived(joined.message, inviteChoices(invites)), 400);
 			}
 			await takeLink(env, held.secret);
-			return redirectCookies("/", [keyCookie(joined.secret), clearSeenCookie(), clearChooseCookie()]);
+			return signedInRedirect(request, [keyCookie(joined.secret), clearSeenCookie(), clearChooseCookie()]);
 		}
 
 		const signed = await actorFromRequest(request, env);
@@ -1120,6 +1111,12 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 	return html(renderGate(null), 405);
 }
 
+function signedInRedirect(request: Request, cookies: string[]): Response {
+	const back = safeReturnPath(readCookie(request, RETURN_COOKIE) ?? "");
+	if (!back) return redirectCookies("/", cookies);
+	return redirectCookies(back, [...cookies, clearReturnCookie()]);
+}
+
 function redirectCookies(location: string, cookies: string[]): Response {
 	const headers = new Headers({ Location: location });
 	for (const cookie of cookies) headers.append("Set-Cookie", cookie);
@@ -1251,7 +1248,7 @@ async function enterFromAccess(request: Request, env: Env, runtime?: AccessRunti
 	const invites = await pendingInvitations(env.DB, email);
 	if (homes.length === 1 && invites.length === 0) {
 		const home = homes[0]!;
-		return redirectCookies("/", [keyCookie(await openSession(env.DB, home.actor)), clearSeenCookie()]);
+		return signedInRedirect(request, [keyCookie(await openSession(env.DB, home.actor)), clearSeenCookie()]);
 	}
 	if (homes.length > 0) {
 		const choice = await rememberLink(env, email, "choose");
