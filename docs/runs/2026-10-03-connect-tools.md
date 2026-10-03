@@ -4,6 +4,7 @@ A Cursor cloud agent ran this against https://stylebook.dev, then updated the pi
 
 - Date: 2026-10-03, about 05:30 UTC through 05:49 UTC.
 - Worker name: `stylebook`. Version `2ec3fb19-b96b-41c7-9282-d57e8b5db453`, created 2026-10-03T05:48:06Z. Wrangler 4.147.0.
+- Code that was deployed: `c9fbc732d5d0eff2c787a23a5b47929ccbd58492`. The deploy ran from that tree, and the commit was made after the live pass.
 - The demo secret was not changed. No address, account id, team host, or workers.dev hostname is recorded here.
 
 An earlier pass on this branch had no Cloudflare login, so it stopped before deploy. This pass found the API token and continued.
