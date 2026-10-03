@@ -35,7 +35,7 @@ With the test KV namespace in place:
 - Calling publish returned "An agent cannot publish."
 - Revoke on People, then the same token, returned 401.
 
-`npm test`: 10 files, 83 tests, passed. `npm run typecheck` passed.
+`npm test`: 10 files, 86 tests, passed, including the People checks that landed on main the same day. `npm run typecheck` passed. The pictures were taken again after that People restack.
 
 ## Cards
 
