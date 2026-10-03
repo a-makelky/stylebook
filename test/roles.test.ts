@@ -595,9 +595,13 @@ describe("roles on the screen, the Git route, and MCP", () => {
 		const spareStarted = await form("/start", "workspace=Spare", spareSeen);
 		expect(spareStarted.status).toBe(303);
 		const spareCookie = cookie(spareStarted, "stylebook");
+		const spareHome = await fetch(`${origin}/`, { headers: { Cookie: spareCookie } });
+		expect(spareHome.status).toBe(200);
 		const spareRow = await db.prepare(`SELECT id FROM workspaces WHERE name = ?1 AND deleted_at IS NULL`).bind("Spare").first<{ id: string }>();
 		const spareId = spareRow?.id ?? "";
 		expect(spareId).not.toBe("");
+		const beforeDelete = await env.WORKSPACE.list({ limit: 200 });
+		expect(beforeDelete.repos.some((repo) => repo.name === `${spareId}-library`)).toBe(true);
 		const removed = await fetch(`${origin}/admin`, {
 			method: "POST",
 			redirect: "manual",
@@ -608,6 +612,8 @@ describe("roles on the screen, the Git route, and MCP", () => {
 			body: `workspace=${encodeURIComponent(spareId)}&action=delete&name=Spare`,
 		});
 		expect(removed.status).toBe(303);
+		const afterDelete = await env.WORKSPACE.list({ limit: 200 });
+		expect(afterDelete.repos.some((repo) => repo.name.startsWith(`${spareId}-`))).toBe(false);
 		const after = await (await fetch(`${origin}/admin`, { headers: { "Cf-Access-Jwt-Assertion": await jwt(SERVICE) } })).text();
 		expect(after).toContain("Deleted the workspace.");
 		expect(after).not.toContain("Spare");

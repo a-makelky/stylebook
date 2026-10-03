@@ -148,6 +148,13 @@ export class FakeWorkspace {
 		return new FakeRepo(this, name) as unknown as ArtifactsRepo;
 	}
 
+	async delete(name: string): Promise<boolean> {
+		const had = this.repos.delete(name);
+		const dir = this.gitDir(name);
+		if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+		return had;
+	}
+
 	async list(opts: { limit?: number; cursor?: string } = {}) {
 		const names = [...this.repos.keys()].sort();
 		const start = opts.cursor ? Math.max(0, names.indexOf(opts.cursor) + 1) : 0;

@@ -8,7 +8,7 @@ import { LIMIT_MESSAGE, limitsOf } from "./limits";
 import { authorize, effectiveLimits, pendingInvitations, type Invitation } from "./roles";
 import type { Role } from "./permit";
 import { claimSignInSend, normalizeEmail, rememberLink, sendStoredLink, takeLink, type StoredLink } from "./mail";
-import { libraryName } from "./workspace";
+import { deleteWorkspaceRepos, libraryName } from "./workspace";
 
 const SESSION_TTL_SECONDS = 1_209_600;
 
@@ -581,6 +581,7 @@ export async function deleteWorkspace(env: Env, actor: Actor, typedName: string)
 	if (!decision.ok) return decision.sentence;
 	const workspace = await workspaceById(env.DB, actor.workspaceId);
 	if (!workspace || typedName.trim() !== workspace.name) return "Type the workspace name to delete it.";
+	await deleteWorkspaceRepos(env.WORKSPACE, actor.workspaceId);
 	const now = new Date().toISOString();
 	const people = await env.DB.prepare(`SELECT id FROM actors WHERE workspace_id = ?1`).bind(actor.workspaceId).all<{ id: string }>();
 	for (const person of people.results ?? []) await dropActorAccess(env, person.id);

@@ -6,6 +6,7 @@ import { formatUsd, operationsCostUsd } from "./cost";
 import { verifiedEmail, type AccessRuntime } from "./identity";
 import { isServiceAdmin, monthKey, signInCount } from "./roles";
 import { monthOperationTotal } from "./usage";
+import { deleteWorkspaceRepos } from "./workspace";
 
 function esc(value: string): string {
 	return value
@@ -162,6 +163,7 @@ export async function handleAdmin(request: Request, env: Env, runtime?: AccessRu
 			if ((form.get("name") ?? "") !== workspace.name) {
 				return html(page(`<p class="warn">Type the workspace name to delete it.</p>`), 400);
 			}
+			await deleteWorkspaceRepos(env.WORKSPACE, id);
 			const now = new Date().toISOString();
 			const actors = await env.DB.prepare(`SELECT id FROM actors WHERE workspace_id = ?1`).bind(id).all<{ id: string }>();
 			for (const actor of actors.results ?? []) {

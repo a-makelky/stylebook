@@ -251,7 +251,19 @@ export interface Edition {
 	savedAt: string;
 }
 
-/** Every repo name in the workspace. The binding pages with a cursor. */
+/**
+ * Remove this workspace's library and suggestion copies.
+ * https://developers.cloudflare.com/artifacts/api/workers-binding/
+ */
+export async function deleteWorkspaceRepos(workspace: Artifacts, workspaceId: string): Promise<void> {
+	const names = await listRepoNames(workspace);
+	for (const name of names) {
+		if (!repoInWorkspace(workspaceId, name)) continue;
+		await workspace.delete(name);
+	}
+}
+
+/** Every repo name in the namespace. The binding pages with a cursor. */
 export async function listRepoNames(workspace: Artifacts): Promise<string[]> {
 	const names: string[] = [];
 	let cursor: string | undefined;
