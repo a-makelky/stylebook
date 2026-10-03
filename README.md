@@ -28,7 +28,7 @@ This table is the honest state of the code, not a roadmap.
 | Sign in with Cloudflare Access, Admin and Member, People | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-access-roles.md). |
 | Suspension on suggestion writes, admin page, second workspace, People | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-tracer-8-review.md). |
 | Connect your tools: sign in from the tool, skills, team connections | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-connect-tools.md). |
-| Download, back up, and restore a workspace | Built and tested against a local stand-in. Not yet run on live Artifacts. See [the run log](docs/runs/2026-10-03-backups.md). |
+| Download, back up, and restore a workspace | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-backups.md). GitHub backups wait on the app. |
 
 Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for a piece, treat that piece as unproven.
 
