@@ -120,7 +120,7 @@ describe("review fixes for workspaces", () => {
 			headers: { Cookie: member, "Content-Type": "application/x-www-form-urlencoded" },
 			body: `id=${encodeURIComponent(ownerId)}`,
 		});
-		expect(await refused.text()).toContain("Only the person who started this workspace can remove someone.");
+		expect(await refused.text()).toContain("The person who started this workspace cannot be removed.");
 		const stillThere = await db
 			.prepare(`SELECT removed_at FROM actors WHERE id = ?1`)
 			.bind(ownerId)
@@ -156,7 +156,7 @@ describe("review fixes for workspaces", () => {
 		const removed = await fetch(`${origin}/people/remove`, {
 			method: "POST",
 			headers: { Cookie: owner, "Content-Type": "application/x-www-form-urlencoded" },
-			body: `id=${encodeURIComponent(memberId)}`,
+			body: `id=${encodeURIComponent(memberId)}&confirm=yes`,
 		});
 		expect(await removed.text()).not.toContain("not in this workspace");
 		const gone = await fetch(`${origin}/`, { headers: { Cookie: member } });
@@ -513,7 +513,7 @@ describe("review fixes for workspaces", () => {
 		expect((await start("Header", email, "203.0.113.90")).status).toBe(200);
 		const cookie = sessionCookie(await confirm(await linkFor(email)));
 		const html = await (await fetch(`${origin}/`, { headers: { Cookie: cookie } })).text();
-		expect(html).toMatch(/<header>[\s\S]*class="wordmark"[\s\S]*class="account"[\s\S]*People and agents[\s\S]*Sign out[\s\S]*<\/header>/);
+		expect(html).toMatch(/<header>[\s\S]*class="wordmark"[\s\S]*class="account"[\s\S]*People[\s\S]*Sign out[\s\S]*<\/header>/);
 		expect(html).toContain(".account");
 		expect(html).toContain("font-size: 16px");
 		expect(html).toContain("flex-wrap: wrap");

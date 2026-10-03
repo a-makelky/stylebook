@@ -1,15 +1,14 @@
 // The review screen. One page: the library, the open suggestions, and history.
 // Words on this page follow design/README.md.
 
-import { actorFromRequest, chooseCookie, clearChooseCookie, clearCookie, keyCookie, readCookie, CHOOSE_COOKIE, signOut } from "./auth";
+import { actorFromRequest, chooseCookie, clearChooseCookie, clearCookie, clearSeenCookie, keyCookie, readCookie, seenCookie, CHOOSE_COOKIE, SEEN_COOKIE, signOut } from "./auth";
+import { accessLogoutUrl, signInMode, verifiedEmail, type AccessRuntime } from "./identity";
 import { listActors } from "./actors";
-import { clientIp, issueSignInLink, normalizeEmail, peekLink, SENT, SIGN_IN_ACK, takeLink } from "./mail";
-import { LIMIT_MESSAGE, limitsOf } from "./limits";
+import { clientIp, issueSignInLink, normalizeEmail, peekLink, rememberLink, SENT, SIGN_IN_ACK, takeLink } from "./mail";
 import {
 	chooseWorkspace,
 	cleanWorkspaceName,
 	connectAgent,
-	countMembers,
 	deliverSignIn,
 	freshAgentKey,
 	joinFromLink,
@@ -20,8 +19,17 @@ import {
 	renameAgent,
 	reserveWorkspaceStart,
 	revokeAgentKey,
+	acceptInvitation,
+	cancelInvitation,
+	changeRole,
+	deleteWorkspace,
+	finishWorkspaceStart,
+	openSession,
+	invitePerson,
+	saveWorkspaceSettings,
 	workspaceById,
 } from "./teams";
+import { authorize, invitationsForWorkspace, pendingInvitations, recordSignIn, setPageLock, workspaceState } from "./roles";
 import { scopedEnv } from "./usage";
 import { libraryName } from "./workspace";
 import { describeError } from "./redact";
@@ -124,10 +132,12 @@ function suggestionCard(desk: Desk, suggestion: DeskSuggestion, selected: boolea
 	const item = desk.item ?? "";
 	const href = `/?item=${encodeURIComponent(item)}&suggestion=${encodeURIComponent(suggestion.name)}`;
 	const conflict = selected && desk.conflict ? desk.conflict : null;
-	const ways = conflict
-		? `<p class="overlap">Nothing was published. These lines also changed in ${
-				conflict.current ? "the current edition" : `Suggestion ${conflict.otherNumber}`
-			}.</p>
+	const ways =
+		conflict && desk.canPublish
+			? `<p class="overlap">Nothing was published. These lines also changed in ${
+					conflict.current ? "the current edition" : `Suggestion ${conflict.otherNumber}`
+				}.</p>
+        <div class="ways">
         <form method="post" action="/resolve">${hidden("item", item)}${hidden("suggestion", suggestion.name)}${hidden("other", conflict.otherName)}${hidden("mode", "keep-this")}
           <button class="primary" type="submit">Keep this one</button>
         </form>
@@ -136,8 +146,13 @@ function suggestionCard(desk: Desk, suggestion: DeskSuggestion, selected: boolea
         </form>
         <form method="post" action="/resolve">${hidden("item", item)}${hidden("suggestion", suggestion.name)}${hidden("other", conflict.otherName)}${hidden("mode", "combine")}
           <button class="secondary" type="submit">${icon("combine", true)} Ask an agent to combine them</button>
-        </form>`
-		: "";
+        </form>
+        </div>`
+			: conflict
+				? `<p class="overlap">Nothing was published. These lines also changed in ${
+						conflict.current ? "the current edition" : `Suggestion ${conflict.otherNumber}`
+					}.</p>`
+				: "";
 	const publish = desk.canPublish
 		? `<form method="post" action="/publish">${hidden("item", item)}${hidden("suggestion", suggestion.name)}
             <button class="primary" type="submit">${icon("publish", true)} Publish</button>
@@ -145,7 +160,9 @@ function suggestionCard(desk: Desk, suggestion: DeskSuggestion, selected: boolea
           <form method="post" action="/decline">${hidden("item", item)}${hidden("suggestion", suggestion.name)}
             <button class="text" type="submit">${icon("decline", true)} Decline</button>
           </form>`
-		: `<p class="meta">${icon("locked", true)} Locked</p>`;
+		: desk.locked
+			? `<p class="meta">${icon("locked", true)} Locked</p>`
+			: "";
 	return `<article class="suggestion${selected ? " selected" : ""}">
     <a href="${href}">${icon("suggestion", true)} <span class="ring ${suggestion.combined ? "green" : selected ? "blue" : ""}">${suggestion.number}</span>
       <span class="who">Written by ${esc(suggestion.writer)} for ${esc(suggestion.owner)}</span></a>
@@ -166,7 +183,8 @@ export function renderDesk(desk: Desk, suggestion: string | null): string {
 				.map((item) => {
 					const href = `/?item=${encodeURIComponent(item.path)}`;
 					const current = item.path === desk.item ? ` aria-current="page"` : "";
-					return `<li><a href="${href}"${current}>${esc(item.title)}</a></li>`;
+					const mark = desk.lockedPaths.includes(item.path) ? ` ${icon("locked", true)}` : "";
+					return `<li><a href="${href}"${current}>${esc(item.title)}</a>${mark}</li>`;
 				})
 				.join("");
 			return `<h2>${esc(group)}</h2><ul>${links}</ul>`;
@@ -186,7 +204,11 @@ export function renderDesk(desk: Desk, suggestion: string | null): string {
 		desk.editionNumber && desk.publishedOn
 			? `<p class="meta">${icon("edition", true)} Edition ${desk.editionNumber}, published ${esc(desk.publishedOn)}</p>`
 			: "";
-	const locked = desk.canPublish ? "" : `<p class="meta">${icon("locked", true)} Locked</p>`;
+	const locked = desk.locked ? `<p class="meta">${icon("locked", true)} Locked</p>` : "";
+	const lockControl = desk.canLock && desk.item
+		? `<form method="post" action="${desk.locked ? "/unlock" : "/lock"}">${hidden("item", desk.item)}
+        <button class="text" type="submit">${desk.locked ? "Unlock" : "Lock this page"}</button></form>`
+		: "";
 	const description = desk.description ? `<p class="lede">${esc(desk.description)}</p>` : "";
 	const history =
 		desk.history.length === 0
@@ -209,6 +231,7 @@ export function renderDesk(desk: Desk, suggestion: string | null): string {
         <h1>${esc(desk.title)}</h1>
         ${edition}
         ${locked}
+        ${lockControl}
         ${description}
         ${notice}
         <div class="page-body">${renderLines(desk.lines)}</div>
@@ -228,7 +251,7 @@ export function renderDesk(desk: Desk, suggestion: string | null): string {
 function accountLine(workspaceName: string): string {
 	// A div, not a paragraph: a form inside a paragraph is lifted out of it,
 	// which split the workspace name and Sign out onto opposite sides of the line.
-	return `<div class="account"><span>${esc(workspaceName)}</span><a href="/people">People and agents</a>
+	return `<div class="account"><span>${esc(workspaceName)}</span><a href="/people">People</a>
     <form method="post" action="/sign-out"><button class="text" type="submit">Sign out</button></form></div>`;
 }
 
@@ -294,9 +317,17 @@ function page(parts: { main: string; account?: string }): string {
   .suggestion a { display: flex; align-items: center; gap: 8px; text-decoration: none; }
   .who { font-style: italic; color: var(--graphite); }
   .actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .ways { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 12px; }
+  .ways form { display: flex; margin: 0; }
+  .ways button { width: 100%; }
+  @media (min-width: 1100px) {
+    .ways { flex-direction: row; align-items: stretch; }
+    .ways form { flex: 1 1 0; min-width: 0; }
+  }
   button { font-size: 17px; line-height: 1.5; cursor: pointer; }
   button.primary, button.secondary { min-height: 44px; padding: 0 16px; border-radius: 3px; }
-  button.primary { background: var(--ink); color: var(--paper); border: none; }
+  button.primary, a.primary { background: var(--ink); color: var(--paper); border: none; text-decoration: none; }
+  a.primary { display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; border-radius: 3px; }
   button.secondary { background: var(--paper); color: var(--ink); border: 1px solid var(--ink); }
   button.text { background: none; border: none; color: var(--ink); text-decoration: underline; min-height: 44px; padding: 0; }
   button .icon { vertical-align: -4px; }
@@ -398,26 +429,83 @@ function setupMarkup(origin: string, workspaceId: string, key: string): string {
     <pre data-setup>${esc(folder)}</pre>`;
 }
 
+function plainWhen(iso: string | null | undefined): string {
+	if (!iso) return "Not used yet";
+	const date = new Date(iso);
+	if (Number.isNaN(date.getTime())) return "Not used yet";
+	return date.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+}
+
+interface PeoplePerson {
+	id: string;
+	name: string;
+	email: string;
+	role: string;
+	joined: string | null;
+	you: boolean;
+	starter: boolean;
+	agents: string;
+}
+
+interface PeopleAgent {
+	id: string;
+	name: string;
+	tool: string;
+	person: string;
+	lastUsed: string | null;
+	yours: boolean;
+}
+
 function renderPeople(
 	workspaceName: string,
-	people: { id: string; name: string; you: boolean }[],
-	agents: { id: string; name: string; tool: string; yours: boolean }[],
+	people: PeoplePerson[],
+	agents: PeopleAgent[],
+	invites: { id: string; email: string; role: string }[],
 	message: string | null,
 	reveal: { name: string; key: string; origin: string; workspaceId: string } | null,
-	canRemove: boolean,
+	admin: boolean,
+	starter: boolean,
+	membersCanPublish: boolean,
+	links: boolean,
 ): string {
-	const note = message ? `<p class="overlap">${esc(message)}</p>` : "";
+	const note = message ? `<p class="${message.startsWith("Only an") || message.startsWith("An agent") || message.startsWith("The person") || message.startsWith("There is") || message.startsWith("That ") || message.startsWith("This ") || message.startsWith("Give ") || message.startsWith("Enter ") || message.startsWith("Type ") || message.startsWith("You cannot") ? "overlap" : "notice"}">${esc(message)}</p>` : "";
 	const shown = reveal
 		? `<p class="notice">This key for ${esc(reveal.name)} is shown once. Copy it now.</p>
        <p><code>${esc(reveal.key)}</code></p>
        ${setupMarkup(reveal.origin, reveal.workspaceId, reveal.key)}`
 		: "";
 	const personRows = people
+		.map((person) => {
+			const role = person.starter
+				? `<span class="meta">Started this workspace</span>`
+				: admin
+					? `<form method="post" action="/people/role">${hidden("id", person.id)}
+              <label for="role-${esc(person.id)}">Role</label>
+              <select id="role-${esc(person.id)}" name="role">
+                <option value="member"${person.role === "member" ? " selected" : ""}>Member</option>
+                <option value="admin"${person.role === "admin" ? " selected" : ""}>Admin</option>
+              </select>
+              <button class="secondary" type="submit">Change role</button>
+            </form>`
+					: `<span class="meta">${person.role === "admin" ? "Admin" : "Member"}</span>`;
+			const remove =
+				admin && !person.starter
+					? `<form method="post" action="/people/remove">${hidden("id", person.id)}<button class="text" type="submit">Remove</button></form>`
+					: "";
+			return `<div class="person">
+        <p>${esc(person.name)}${person.you ? " (you)" : ""} <span class="meta">${esc(person.email)}</span></p>
+        <p class="meta">Joined ${esc(plainWhen(person.joined))}${person.agents ? `. ${esc(person.agents)}` : ""}</p>
+        ${role}
+        ${remove}
+      </div>`;
+		})
+		.join("");
+	const inviteRows = invites
 		.map(
-			(person) => `<div class="person bar"><span>${esc(person.name)}${person.you ? " (you)" : ""}</span>
+			(invite) => `<div class="person bar"><span>${esc(invite.email)} <span class="meta">${invite.role === "admin" ? "Admin" : "Member"}</span></span>
         ${
-					canRemove && !person.you
-						? `<form method="post" action="/people/remove">${hidden("id", person.id)}<button class="text" type="submit">Remove</button></form>`
+					admin
+						? `<form method="post" action="/invitations/cancel">${hidden("id", invite.id)}<button class="text" type="submit">Cancel</button></form>`
 						: ""
 				}</div>`,
 		)
@@ -429,33 +517,53 @@ function renderPeople(
           <label for="rename-${esc(agent.id)}">Name</label>
           <input id="rename-${esc(agent.id)}" name="name" value="${esc(agent.name)}" required>
           <button class="secondary" type="submit">Rename</button>
-        </form>`
+        </form>
+        <form method="post" action="/agents/key">${hidden("id", agent.id)}<button class="text" type="submit">Make a new key</button></form>`
 				: "";
+			const revoke =
+				admin || agent.yours
+					? `<form method="post" action="/agents/revoke">${hidden("id", agent.id)}<button class="text" type="submit">Revoke</button></form>`
+					: "";
 			return `<div class="agent">
-        <p>${esc(agent.name)} <span class="meta">${esc(agent.tool)}</span></p>
+        <p>${esc(agent.name)} <span class="meta">${esc(agent.tool)}, ${esc(agent.person)}, ${esc(plainWhen(agent.lastUsed))}</span></p>
         ${rename}
-        <form method="post" action="/agents/revoke">${hidden("id", agent.id)}<button class="text" type="submit">Revoke the key</button></form>
-        <form method="post" action="/agents/key">${hidden("id", agent.id)}<button class="text" type="submit">Make a new key</button></form>
-        <form method="post" action="/agents/remove">${hidden("id", agent.id)}<button class="text" type="submit">Remove</button></form>
+        ${revoke}
       </div>`;
 		})
 		.join("");
-	return page({
-		account: accountLine(workspaceName),
-		main: `<div class="sheet">
-      <p class="meta"><a href="/">Library</a></p>
-      <h1>${esc(workspaceName)}</h1>
-      ${note}
-      ${shown}
-      <h2>Invite a colleague</h2>
+	const invite = admin
+		? `<h2>Invite</h2>
       <form method="post" action="/invite">
         <label for="invite-email">Email</label>
         <input id="invite-email" name="email" type="email" autocomplete="email" required>
-        <button class="primary" type="submit">Send an invite</button>
+        <label for="invite-role">Role</label>
+        <select id="invite-role" name="role">
+          <option value="member" selected>Member</option>
+          <option value="admin">Admin</option>
+        </select>
+        <button class="primary" type="submit">${links ? "Send an invite" : "Invite"}</button>
       </form>
-      <h2>People</h2>
-      ${personRows || `<p class="meta">Just you, so far.</p>`}
-      <h2>Connect an agent</h2>
+      ${inviteRows ? `<h2>Waiting to join</h2>${inviteRows}` : ""}`
+		: "";
+	const settings = admin
+		? `<h2>Settings</h2>
+      <form method="post" action="/settings">
+        <label for="workspace-name">Workspace name</label>
+        <input id="workspace-name" name="name" value="${esc(workspaceName)}" required>
+        <label class="check"><input type="checkbox" name="members_can_publish" value="yes"${membersCanPublish ? " checked" : ""}> Members can publish</label>
+        <p class="meta">When this is off, members suggest and an Admin publishes.</p>
+        <button class="secondary" type="submit">Save</button>
+      </form>`
+		: "";
+	const deletion = starter
+		? `<h2>Delete this workspace</h2>
+      <form method="post" action="/workspace/delete">
+        <label for="delete-name">Type the workspace name</label>
+        <input id="delete-name" name="name" autocomplete="off" required>
+        <button class="text" type="submit">Delete</button>
+      </form>`
+		: "";
+	const connect = `<h2>Connect an agent</h2>
       <form method="post" action="/agents">
         <label for="agent-name">Name</label>
         <input id="agent-name" name="name" required placeholder="Claude, working for me">
@@ -466,8 +574,36 @@ function renderPeople(
           <option value="other">Another tool</option>
         </select>
         <button class="primary" type="submit">Connect</button>
+      </form>`;
+	return page({
+		account: accountLine(workspaceName),
+		main: `<div class="sheet">
+      <p class="meta"><a href="/">Library</a></p>
+      <h1>People</h1>
+      <p class="meta">${esc(workspaceName)}</p>
+      ${note}
+      ${shown}
+      ${invite}
+      <h2>Everyone in the workspace</h2>
+      ${personRows || `<p class="meta">Just you, so far.</p>`}
+      <h2>Agents</h2>
+      ${agentRows || `<p class="meta">No agents yet.</p>`}
+      ${connect}
+      ${settings}
+      ${deletion}
+    </div>`,
+	});
+}
+
+function renderRemoveConfirm(name: string, id: string): string {
+	return page({
+		main: `<div class="sheet">
+      <h1>Remove ${esc(name)}</h1>
+      <p>Remove ${esc(name)} from this workspace? Their agents stop working.</p>
+      <form method="post" action="/people/remove">${hidden("id", id)}${hidden("confirm", "yes")}
+        <button class="primary" type="submit">Remove</button>
       </form>
-      ${agentRows}
+      <p><a href="/people">Cancel</a></p>
     </div>`,
 	});
 }
@@ -553,6 +689,14 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 		path === "/agents/key" ||
 		path === "/agents/remove" ||
 		path === "/people/remove" ||
+		path === "/people/role" ||
+		path === "/invitations/cancel" ||
+		path === "/settings" ||
+		path === "/workspace/delete" ||
+		path === "/lock" ||
+		path === "/unlock" ||
+		path === "/enter" ||
+		path === "/join" ||
 		path === "/publish" ||
 		path === "/resolve" ||
 		path === "/decline" ||
@@ -561,6 +705,8 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 	if (!screen) return null;
 
 	try {
+		if (link && signInMode(env) === "access") return html(renderAccessGate(), 404);
+
 		if (link && (request.method === "GET" || request.method === "POST")) {
 			const secret = link[1] ?? "";
 			if (request.method === "GET") {
@@ -578,6 +724,23 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 			return redirectCookies("/", [keyCookie(joined.joined.secret), clearChooseCookie()]);
 		}
 
+		if (request.method === "POST" && path === "/start" && signInMode(env) === "access") {
+			const seen = await seenEmail(request, env);
+			if (!seen) return html(renderAccessGate(), 401);
+			const form = await fields(request);
+			const workspace = cleanWorkspaceName(form.get("workspace") ?? "");
+			if (!workspace) return html(renderArrived("Give the workspace a short name."), 400);
+			const reserved = await reserveWorkspaceStart(env, seen, clientIp(request));
+			if ("message" in reserved) return html(renderArrived(reserved.message), 429);
+			const started = await finishWorkspaceStart(env, seen, workspace);
+			if ("message" in started) {
+				await releaseWorkspaceStart(env, reserved.id);
+				return html(renderArrived(started.message), 400);
+			}
+			await takeLink(env, readCookie(request, SEEN_COOKIE) ?? "");
+			return redirectCookies("/", [keyCookie(started.joined.secret), clearSeenCookie()]);
+		}
+
 		if (request.method === "POST" && path === "/start") {
 			const form = await fields(request);
 			const workspace = cleanWorkspaceName(form.get("workspace") ?? "");
@@ -593,6 +756,10 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 			});
 			if (!sent.ok) await releaseWorkspaceStart(env, reserved.id);
 			return html(renderGate(sent.message, sent.ok ? "ok" : "error"), sent.ok ? 200 : sent.status);
+		}
+
+		if (request.method === "POST" && path === "/sign-in" && signInMode(env) === "access") {
+			return html(renderAccessGate(), 404);
 		}
 
 		if (request.method === "POST" && path === "/sign-in") {
@@ -628,13 +795,68 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 
 		if (request.method === "POST" && path === "/sign-out") {
 			await signOut(request, env);
-			return redirect("/", { "Set-Cookie": clearCookie() });
+			const logout = accessLogoutUrl(env);
+			const headers = new Headers({ "Set-Cookie": clearCookie() });
+			headers.append("Set-Cookie", clearSeenCookie());
+			if (logout) {
+				headers.set("Location", logout);
+				return new Response(null, { status: 303, headers });
+			}
+			headers.set("Location", "/");
+			return new Response(null, { status: 303, headers });
+		}
+
+		if (path === "/enter" && request.method === "GET") {
+			return enterFromAccess(request, env, ctx as AccessRuntime | undefined);
+		}
+
+		if (request.method === "POST" && path === "/join" && signInMode(env) === "access") {
+			const seen = await seenEmail(request, env);
+			if (!seen) return html(renderAccessGate(), 401);
+			const form = await fields(request);
+			const joined = await acceptInvitation(env, seen, form.get("workspace") ?? "");
+			if ("message" in joined) return html(renderArrived(joined.message), 400);
+			await takeLink(env, readCookie(request, SEEN_COOKIE) ?? "");
+			return redirectCookies("/", [keyCookie(joined.secret), clearSeenCookie()]);
 		}
 
 		const signed = await actorFromRequest(request, env);
 		if (!signed) {
-			if (request.method === "GET" && path === "/") return html(renderGate(null));
+			if (request.method === "GET" && path === "/") {
+				return html(signInMode(env) === "access" ? renderAccessGate() : renderGate(null));
+			}
+			if (signInMode(env) === "access") return html(renderAccessGate(), 401);
 			return html(renderGate("Send yourself a sign-in link to open the library."), 401);
+		}
+
+		if (
+			signed.actor.kind === "agent" &&
+			request.method === "POST" &&
+			["/invite", "/people/role", "/people/remove", "/settings", "/workspace/delete", "/lock", "/unlock", "/invitations/cancel", "/publish", "/decline", "/resolve"].includes(path)
+		) {
+			const form = path === "/resolve" ? await fields(request) : null;
+			const action =
+				path === "/decline"
+					? "decline"
+					: path === "/resolve" && form?.get("mode") === "combine"
+						? "combine"
+						: path === "/publish" || path === "/resolve"
+							? "publish"
+							: path === "/settings" || path === "/workspace/delete"
+								? "members-can-publish"
+								: path === "/lock" || path === "/unlock"
+									? "lock"
+									: "invite";
+			const decision = await authorize(env, signed.actor, action);
+			return html(renderGate(decision.ok ? "An agent cannot change the workspace." : decision.sentence), 403);
+		}
+
+		if (signed.actor.kind === "person" && request.method === "POST" && (path === "/lock" || path === "/unlock")) {
+			const form = await fields(request);
+			const item = cleanPath(form.get("item"));
+			if (!item) return redirect(back(null, null, "Choose a page first."));
+			const problem = await setPageLock(env, signed.actor, item, path === "/lock");
+			return redirect(back(item, null, problem ?? (path === "/lock" ? "Locked." : "Unlocked.")));
 		}
 
 		if (signed.actor.kind === "person" && request.method === "GET" && path === "/people") {
@@ -643,26 +865,64 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 
 		if (signed.actor.kind === "person" && request.method === "POST" && path === "/invite") {
 			const form = await fields(request);
-			const email = (form.get("email") ?? "").trim().toLowerCase();
-			const homes = await memberships(env.DB, email);
-			const already = homes.some((item) => item.workspace.id === signed.actor.workspaceId);
-			if (!already && (await countMembers(env.DB, signed.actor.workspaceId, "person")) >= limitsOf(env).people) {
-				return peoplePage(env, signed.actor, url.origin, LIMIT_MESSAGE.people, null);
+			const role = form.get("role") === "admin" ? "admin" : "member";
+			const invited = await invitePerson(env, signed.actor, form.get("email") ?? "", role);
+			if ("message" in invited) return peoplePage(env, signed.actor, url.origin, invited.message, null);
+			if (signInMode(env) === "link") {
+				const workspace = await workspaceById(env.DB, signed.actor.workspaceId);
+				const sent = await issueSignInLink(env, request, url.origin, {
+					email: invited.invitation.email,
+					purpose: "invite",
+					workspaceId: signed.actor.workspaceId,
+					workspaceName: workspace?.name ?? null,
+					invitedBy: signed.actor.id,
+				});
+				return peoplePage(env, signed.actor, url.origin, sent.ok ? SENT : sent.message, null);
 			}
-			const workspace = await workspaceById(env.DB, signed.actor.workspaceId);
-			const sent = await issueSignInLink(env, request, url.origin, {
-				email,
-				purpose: "invite",
-				workspaceId: signed.actor.workspaceId,
-				workspaceName: workspace?.name ?? null,
-				invitedBy: signed.actor.id,
-			});
-			return peoplePage(env, signed.actor, url.origin, sent.ok ? SENT : sent.message, null);
+			return peoplePage(env, signed.actor, url.origin, "They will join when they sign in.", null);
+		}
+
+		if (signed.actor.kind === "person" && request.method === "POST" && path === "/invitations/cancel") {
+			const form = await fields(request);
+			const problem = await cancelInvitation(env, signed.actor, form.get("id") ?? "");
+			return peoplePage(env, signed.actor, url.origin, problem ?? "Cancelled.", null);
+		}
+
+		if (signed.actor.kind === "person" && request.method === "POST" && path === "/people/role") {
+			const form = await fields(request);
+			const problem = await changeRole(env, signed.actor, form.get("id") ?? "", form.get("role") === "admin" ? "admin" : "member");
+			return peoplePage(env, signed.actor, url.origin, problem ?? "Role saved.", null);
+		}
+
+		if (signed.actor.kind === "person" && request.method === "POST" && path === "/settings") {
+			const form = await fields(request);
+			const problem = await saveWorkspaceSettings(
+				env,
+				signed.actor,
+				form.get("name") ?? "",
+				form.get("members_can_publish") === "yes",
+			);
+			return peoplePage(env, signed.actor, url.origin, problem ?? "Saved.", null);
+		}
+
+		if (signed.actor.kind === "person" && request.method === "POST" && path === "/workspace/delete") {
+			const form = await fields(request);
+			const problem = await deleteWorkspace(env, signed.actor, form.get("name") ?? "");
+			if (problem) return peoplePage(env, signed.actor, url.origin, problem, null);
+			await signOut(request, env);
+			return redirect("/", { "Set-Cookie": clearCookie() });
 		}
 
 		if (signed.actor.kind === "person" && request.method === "POST" && path === "/people/remove") {
 			const form = await fields(request);
-			const problem = await removePerson(env, signed.actor, form.get("id") ?? "");
+			const personId = form.get("id") ?? "";
+			if (form.get("confirm") !== "yes") {
+				const decision = await authorize(env, signed.actor, "remove-person", null, { targetId: personId });
+				if (!decision.ok) return peoplePage(env, signed.actor, url.origin, decision.sentence, null);
+				const target = (await listActors(env.DB, signed.actor.workspaceId)).find((item) => item.id === personId);
+				return html(renderRemoveConfirm(target?.name ?? "this person", personId));
+			}
+			const problem = await removePerson(env, signed.actor, personId);
 			return peoplePage(env, signed.actor, url.origin, problem, null);
 		}
 
@@ -777,33 +1037,114 @@ function redirectCookies(location: string, cookies: string[]): Response {
 
 async function peoplePage(
 	env: Env,
-	actor: { id: string; name: string; workspaceId: string; kind: string },
+	actor: import("./actors").Actor,
 	origin: string,
 	message: string | null,
 	reveal: { name: string; key: string } | null,
 ): Promise<Response> {
-	const workspace = await workspaceById(env.DB, actor.workspaceId);
-	const canRemove = workspace?.ownerId === actor.id;
+	const state = await workspaceState(env.DB, actor.workspaceId);
+	const admin = (await authorize(env, actor, "invite")).ok;
 	const actors = await listActors(env.DB, actor.workspaceId);
 	const people = actors
 		.filter((item) => item.kind === "person")
-		.map((item) => ({ id: item.id, name: item.name, you: item.id === actor.id }));
+		.map((item) => {
+			const theirs = actors.filter((agent) => agent.kind === "agent" && agent.ownerId === item.id);
+			return {
+				id: item.id,
+				name: item.name,
+				email: item.email ?? "",
+				role: item.role === "admin" ? "admin" : "member",
+				joined: item.createdAt ?? null,
+				you: item.id === actor.id,
+				starter: state?.ownerId === item.id,
+				agents: theirs.length === 0 ? "" : `Agents: ${theirs.map((agent) => agent.name).join(", ")}`,
+			};
+		});
 	const agents = actors
-		.filter((item) => item.kind === "agent" && (canRemove || item.ownerId === actor.id))
+		.filter((item) => item.kind === "agent" && (admin || item.ownerId === actor.id))
 		.map((item) => ({
 			id: item.id,
 			name: item.name,
 			tool: item.model ?? "Another tool",
+			person: actors.find((person) => person.id === item.ownerId)?.name ?? "Someone",
+			lastUsed: item.lastUsedAt ?? null,
 			yours: item.ownerId === actor.id,
 		}));
+	const invites = admin ? await invitationsForWorkspace(env.DB, actor.workspaceId) : [];
 	return html(
 		renderPeople(
-			workspace?.name ?? "Workspace",
+			state?.name ?? "Workspace",
 			people,
 			agents,
+			invites.map((item) => ({ id: item.id, email: item.email, role: item.role })),
 			message,
 			reveal ? { ...reveal, origin, workspaceId: actor.workspaceId } : null,
-			canRemove,
+			admin,
+			state?.ownerId === actor.id,
+			state?.membersCanPublish ?? false,
+			signInMode(env) === "link",
 		),
 	);
+}
+
+function renderAccessGate(): string {
+	return page({
+		main: `<div class="sheet">
+      <h1>Sign in</h1>
+      <p>Stylebook sends a one-time code to your email. Then you can open a workspace, accept an invitation, or start one.</p>
+      <p><a class="primary" href="/enter">Sign in</a></p>
+    </div>`,
+	});
+}
+
+function renderArrived(message: string | null, invites: { workspaceId: string; workspaceName: string }[] = []): string {
+	const note = message ? `<p class="overlap">${esc(message)}</p>` : "";
+	const cards = invites
+		.map(
+			(invite) => `<p>You have an invitation to ${esc(invite.workspaceName)}.</p>
+        <form method="post" action="/join">${hidden("workspace", invite.workspaceId)}
+          <button class="primary" type="submit">Join ${esc(invite.workspaceName)}</button>
+        </form>`,
+		)
+		.join("");
+	return page({
+		main: `<div class="sheet">
+      <h1>${invites.length > 0 ? "You have an invitation" : "Start a workspace"}</h1>
+      ${note}
+      ${cards}
+      <h2>Start a workspace</h2>
+      <form method="post" action="/start">
+        <label for="workspace">Workspace name</label>
+        <input id="workspace" name="workspace" autocomplete="organization" required>
+        <button class="primary" type="submit">Start</button>
+      </form>
+    </div>`,
+	});
+}
+
+async function seenEmail(request: Request, env: Env): Promise<string | null> {
+	const secret = readCookie(request, SEEN_COOKIE);
+	if (!secret) return null;
+	const pending = await peekLink(env, secret);
+	if (!pending || pending.purpose !== "sign-in") return null;
+	return pending.email;
+}
+
+async function enterFromAccess(request: Request, env: Env, runtime?: AccessRuntime): Promise<Response> {
+	if (signInMode(env) !== "access") return redirect("/");
+	const email = await verifiedEmail(request, env, runtime);
+	if (!email) return html(renderAccessGate(), 401);
+	await recordSignIn(env.DB, email);
+	const homes = await memberships(env.DB, email);
+	if (homes.length === 1) {
+		const home = homes[0]!;
+	return redirectCookies("/", [keyCookie(await openSession(env.DB, home.actor)), clearSeenCookie()]);
+	}
+	if (homes.length > 1) {
+		const choice = await rememberLink(env, email, "choose");
+		return html(renderChoose(homes.map((item) => item.workspace)), 200, { "Set-Cookie": chooseCookie(choice) });
+	}
+	const invites = await pendingInvitations(env.DB, email);
+	const secret = await rememberLink(env, email, "sign-in");
+	return html(renderArrived(null, invites), 200, { "Set-Cookie": seenCookie(secret) });
 }

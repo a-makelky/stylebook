@@ -3,9 +3,11 @@
 // https://developers.cloudflare.com/agents/model-context-protocol/protocol/transport/
 
 import { actorFromRequest } from "./auth";
+import { authorize } from "./roles";
 import type { Env } from "./env";
 import { DeskError, loadDesk, saveAgentSuggestion } from "./review";
 import { describeError } from "./redact";
+import { noteUsed } from "./teams";
 import { scopedEnv } from "./usage";
 import { ensureLibrary, listPaths, readBytes } from "./workspace";
 
@@ -100,9 +102,15 @@ async function callTool(
 ): Promise<{ text: string; isError: boolean }> {
 	const signed = await actorFromRequest(request, env);
 	if (!signed) return { text: "Missing or unknown key.", isError: true };
+	if (signed.actor.kind === "agent") await noteUsed(env, signed.actor.id);
 	const scoped = scopedEnv(env, signed.actor.workspaceId);
 	env = scoped.env;
 	try {
+		if (name === "publish" || name === "decline" || name === "combine" || name === "invite") {
+			const action = name === "invite" ? "invite" : name === "decline" ? "decline" : name === "combine" ? "combine" : "publish";
+			const decision = await authorize(env, signed.actor, action, typeof args.path === "string" ? args.path : null);
+			return { text: decision.ok ? "Do that from the page." : decision.sentence, isError: true };
+		}
 		if (name === "list_library") return { text: await listLibrary(env, signed.actor.workspaceId), isError: false };
 		if (name === "read_item") {
 			const path = typeof args.path === "string" ? args.path : "";

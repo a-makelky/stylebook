@@ -40,6 +40,8 @@ MAX_OPEN_SUGGESTIONS = "200"
 MAX_SIGN_IN_EMAILS_PER_HOUR = "5"
 MAX_SIGN_IN_EMAILS_PER_IP_PER_HOUR = "20"
 MAX_SIGN_IN_EMAILS_GLOBAL_PER_HOUR = "100"
+# Email links stay in the code. Access is the sign-in that runs.
+SIGN_IN = "access"
 
 # Demo address. Remove this block when the domain is not in your account.
 # https://developers.cloudflare.com/workers/configuration/routing/custom-domains/

@@ -7,6 +7,7 @@ import { actorBySession, endSession } from "./teams";
 
 export const KEY_COOKIE = "stylebook";
 export const CHOOSE_COOKIE = "stylebook_choose";
+export const SEEN_COOKIE = "stylebook_seen";
 
 export function readPresentedKey(request: Request): string | null {
 	const cookie = request.headers.get("Cookie") ?? "";
@@ -80,4 +81,13 @@ export function chooseCookie(secret: string): string {
 
 export function clearChooseCookie(): string {
 	return `${CHOOSE_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
+}
+
+/** A verified email, before there is a workspace session. Same rules as the session cookie. */
+export function seenCookie(secret: string): string {
+	return `${SEEN_COOKIE}=${encodeURIComponent(secret)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=900`;
+}
+
+export function clearSeenCookie(): string {
+	return `${SEEN_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
 }

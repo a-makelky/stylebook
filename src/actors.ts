@@ -5,6 +5,8 @@ import { isLibraryName, ownsCopy, repoInWorkspace } from "./workspace";
 
 export type ActorKind = "person" | "agent";
 
+export type PersonRole = "admin" | "member";
+
 export interface Actor {
 	id: string;
 	kind: ActorKind;
@@ -14,6 +16,10 @@ export interface Actor {
 	workspaceId: string;
 	email: string | null;
 	removedAt: string | null;
+	/** Absent on actors built in older tests. Loaded rows always set it. */
+	role?: PersonRole | null;
+	createdAt?: string | null;
+	lastUsedAt?: string | null;
 }
 
 export interface ActorInput {
@@ -24,6 +30,7 @@ export interface ActorInput {
 	ownerId?: string | null;
 	model?: string | null;
 	email?: string | null;
+	role?: PersonRole | null;
 	key: string;
 }
 
@@ -46,9 +53,12 @@ interface ActorRow {
 	workspace_id: string | null;
 	email: string | null;
 	removed_at: string | null;
+	role: string | null;
+	created_at: string | null;
+	last_used_at: string | null;
 }
 
-const ACTOR_COLUMNS = `id, kind, name, owner_id, model, workspace_id, email, removed_at`;
+const ACTOR_COLUMNS = `id, kind, name, owner_id, model, workspace_id, email, removed_at, role, created_at, last_used_at`;
 
 function rowToActor(row: ActorRow): Actor | null {
 	if (!row.workspace_id) return null;
@@ -61,6 +71,9 @@ function rowToActor(row: ActorRow): Actor | null {
 		workspaceId: row.workspace_id,
 		email: row.email,
 		removedAt: row.removed_at,
+		role: row.role === "admin" ? "admin" : row.kind === "person" ? "member" : null,
+		createdAt: row.created_at,
+		lastUsedAt: row.last_used_at,
 	};
 }
 
@@ -76,7 +89,7 @@ export async function actorByKey(db: D1Database, key: string): Promise<Actor | n
 	const hash = await hashKey(key);
 	const row = await db
 		.prepare(
-			`SELECT a.id, a.kind, a.name, a.owner_id, a.model, a.workspace_id, a.email, a.removed_at
+			`SELECT a.id, a.kind, a.name, a.owner_id, a.model, a.workspace_id, a.email, a.removed_at, a.role, a.created_at, a.last_used_at
        FROM actor_keys k
        JOIN actors a ON a.id = k.actor_id
        WHERE k.key_hash = ?1 AND a.removed_at IS NULL`,
@@ -169,17 +182,33 @@ export async function registerActor(db: D1Database, input: ActorInput): Promise<
 		)
 		.bind(input.workspaceId, input.workspaceId, now)
 		.run();
+	let role: PersonRole = input.role === "admin" ? "admin" : "member";
+	if (input.kind === "person" && !input.role && !existing) {
+		const people = await db
+			.prepare(
+				`SELECT COUNT(*) AS n FROM actors WHERE workspace_id = ?1 AND kind = 'person' AND removed_at IS NULL`,
+			)
+			.bind(input.workspaceId)
+			.first<{ n: number }>();
+		if ((people?.n ?? 0) === 0) role = "admin";
+	}
 	await db
 		.prepare(
-			`INSERT INTO actors (id, kind, name, owner_id, model, workspace_id, email, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+			`INSERT INTO actors (id, kind, name, owner_id, model, workspace_id, email, role, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
        ON CONFLICT(id) DO UPDATE SET
          name = CASE WHEN actors.workspace_id = excluded.workspace_id THEN excluded.name ELSE actors.name END,
          model = CASE WHEN actors.workspace_id = excluded.workspace_id THEN excluded.model ELSE actors.model END,
          email = CASE WHEN actors.workspace_id = excluded.workspace_id THEN COALESCE(excluded.email, actors.email) ELSE actors.email END`,
 		)
-		.bind(input.id, input.kind, name, ownerId, model, input.workspaceId, email, now)
+		.bind(input.id, input.kind, name, ownerId, model, input.workspaceId, email, role, now)
 		.run();
+	if (input.kind === "person" && role === "admin") {
+		await db
+			.prepare(`UPDATE workspaces SET owner_id = ?1 WHERE id = ?2 AND owner_id IS NULL`)
+			.bind(input.id, input.workspaceId)
+			.run();
+	}
 
 	const hash = await hashKey(input.key);
 	const keyOwner = await db

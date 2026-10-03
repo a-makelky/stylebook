@@ -4,7 +4,9 @@
 // https://developers.cloudflare.com/artifacts/concepts/best-practices/
 
 import { actorById, actorByKey, allows, hashKey, refusal, type Actor } from "./actors";
+import { actorBySession } from "./teams";
 import type { Env } from "./env";
+import { authorizeRepo } from "./roles";
 import { getRepo, libraryName } from "./workspace";
 
 export interface Grant {
@@ -74,7 +76,7 @@ export async function handleAccess(request: Request, env: Env): Promise<Response
 	const header = request.headers.get("Authorization") ?? "";
 	const key = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
 	if (!key) return Response.json({ ok: false, error: "Missing or unknown key." }, { status: 401 });
-	const actor = await actorByKey(env.DB, key);
+	const actor = (await actorByKey(env.DB, key)) ?? (await actorBySession(env.DB, key));
 	if (!actor) return Response.json({ ok: false, error: "Missing or unknown key." }, { status: 401 });
 
 	const body = (await request.json().catch(() => ({}))) as { name?: unknown; write?: unknown };
@@ -82,6 +84,10 @@ export async function handleAccess(request: Request, env: Env): Promise<Response
 	const write = body.write === true;
 	if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/.test(name)) {
 		return Response.json({ ok: false, error: "That name is not a copy in the workspace." }, { status: 400 });
+	}
+	if (write) {
+		const decision = await authorizeRepo(env, actor, name, true);
+		if (!decision.ok) return Response.json({ ok: false, error: decision.sentence }, { status: 403 });
 	}
 	if (!allows(actor, name, write)) {
 		return Response.json({ ok: false, error: refusal(name, write) }, { status: 403 });

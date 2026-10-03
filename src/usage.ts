@@ -8,6 +8,10 @@
 
 import type { Env } from "./env";
 
+export function operationMonth(now = new Date()): string {
+	return now.toISOString().slice(0, 7);
+}
+
 export async function recordOperations(
 	db: D1Database,
 	workspaceId: string,
@@ -23,6 +27,25 @@ export async function recordOperations(
 		)
 		.bind(workspaceId, operation, count)
 		.run();
+	await db
+		.prepare(
+			`INSERT INTO workspace_operation_months (workspace_id, month, operation, count)
+       VALUES (?1, ?2, ?3, ?4)
+       ON CONFLICT(workspace_id, month, operation) DO UPDATE SET count = count + ?4`,
+		)
+		.bind(workspaceId, operationMonth(), operation, count)
+		.run();
+}
+
+export async function monthOperationTotal(db: D1Database, workspaceId: string, month = operationMonth()): Promise<number> {
+	const row = await db
+		.prepare(
+			`SELECT COALESCE(SUM(count), 0) AS n FROM workspace_operation_months
+       WHERE workspace_id = ?1 AND month = ?2`,
+		)
+		.bind(workspaceId, month)
+		.first<{ n: number }>();
+	return row?.n ?? 0;
 }
 
 export async function operationCounts(

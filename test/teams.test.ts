@@ -240,10 +240,16 @@ describe("workspaces, sign-in, invites and agents", () => {
 		const people = await (await fetch(`${origin}/people`, { headers: { Cookie: owner } })).text();
 		const personId = people.match(/action="\/people\/remove"><input type="hidden" name="id" value="([^"]+)"/)?.[1] ?? "";
 		expect(personId, people).not.toBe("");
-		const removed = await fetch(`${origin}/people/remove`, {
+		const asked = await fetch(`${origin}/people/remove`, {
 			method: "POST",
 			headers: { Cookie: owner, "Content-Type": "application/x-www-form-urlencoded" },
 			body: `id=${encodeURIComponent(personId)}`,
+		});
+		expect(await asked.text()).toContain("Remove");
+		const removed = await fetch(`${origin}/people/remove`, {
+			method: "POST",
+			headers: { Cookie: owner, "Content-Type": "application/x-www-form-urlencoded" },
+			body: `id=${encodeURIComponent(personId)}&confirm=yes`,
 		});
 		const removedHtml = await removed.text();
 		expect(removedHtml, removedHtml).not.toContain("not in this workspace");

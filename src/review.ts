@@ -5,6 +5,7 @@
 
 import { issueGrant } from "./access";
 import { allows, listActors, ownerOf, type Actor } from "./actors";
+import { authorize, effectiveLimits, lockedPaths } from "./roles";
 import { copyCursor, recentCopies } from "./audit";
 import {
 	changedSections,
@@ -98,6 +99,9 @@ export interface Desk {
 	actorName: string;
 	workspaceName: string;
 	canPublish: boolean;
+	locked: boolean;
+	canLock: boolean;
+	lockedPaths: string[];
 	editionNumber: number | null;
 	publishedOn: string | null;
 	items: DeskItem[];
@@ -196,7 +200,7 @@ async function findRepo(env: Env, name: string): Promise<ArtifactsRepo | null> {
 /** Publish the sample library as the first edition when the review library is empty. */
 export async function ensureSampleLibrary(env: Env, person: Actor, key: string, origin: string): Promise<void> {
 	const libraryRepo = libraryName(person.workspaceId);
-	if (!allows(person, libraryRepo, true)) return;
+	if (!(await authorize(env, person, "publish")).ok) return;
 	const library = await ensureLibrary(env.WORKSPACE, person.workspaceId);
 	const existing = await listEditions(library.repo, 1);
 	if (existing.length > 0) return;
@@ -449,7 +453,10 @@ export async function loadDesk(
 	return {
 		actorName: actor.name,
 		workspaceName: workspace?.name ?? "Workspace",
-		canPublish: allows(actor, libraryName(actor.workspaceId), true),
+		canPublish: (await authorize(env, actor, "publish", chosenPath)).ok,
+		locked: (await lockedPaths(env.DB, actor.workspaceId)).includes(chosenPath ?? ""),
+		canLock: (await authorize(env, actor, "lock", chosenPath)).ok,
+		lockedPaths: await lockedPaths(env.DB, actor.workspaceId),
 		editionNumber: editions.length || null,
 		publishedOn: current ? plainDate(current.savedAt) : null,
 		items,
@@ -534,7 +541,8 @@ export async function publishSuggestion(
 	path: string,
 	mode: "publish" | "keep-this" | "keep-other",
 ): Promise<string> {
-	if (!allows(person, libraryName(person.workspaceId), true)) throw new DeskError("This key cannot change the library.", 403);
+	const decision = await authorize(env, person, mode === "publish" ? "publish" : "keep", path);
+	if (!decision.ok) throw new DeskError(decision.sentence, 403);
 	await ensureSampleLibrary(env, person, key, origin);
 	const { text: libraryText } = await libraryFile(env, person.workspaceId, path);
 	const suggestions = (await openSuggestions(env, person, path, libraryText, null, name)).suggestions;
@@ -598,7 +606,8 @@ export async function combineSuggestions(
 	name: string,
 	path: string,
 ): Promise<string> {
-	if (!allows(person, libraryName(person.workspaceId), true)) throw new DeskError("This key cannot change the library.", 403);
+	const decision = await authorize(env, person, "combine", path);
+	if (!decision.ok) throw new DeskError(decision.sentence, 403);
 	const { text: libraryText } = await libraryFile(env, person.workspaceId, path);
 	const suggestions = (await openSuggestions(env, person, path, libraryText, null, name)).suggestions;
 	const selected = suggestions.find((entry) => entry.name === name);
@@ -641,6 +650,8 @@ export async function combineSuggestions(
 }
 
 export async function declineSuggestion(env: Env, actor: Actor, name: string, path: string): Promise<void> {
+	const decision = await authorize(env, actor, "decline", path);
+	if (!decision.ok) throw new DeskError(decision.sentence, 403);
 	if (!allows(actor, name, false)) throw new DeskError("This key cannot open that copy.", 403);
 	await env.DB.prepare(
 		`INSERT OR REPLACE INTO declines (actor_id, repo_name, path, declined_at) VALUES (?1, ?2, ?3, ?4)`,
@@ -657,6 +668,8 @@ export async function saveAgentSuggestion(
 	origin: string,
 	input: { session: string; path: string; content: string; why: string },
 ): Promise<{ name: string; edition: string }> {
+	const decision = await authorize(env, agent, "suggest");
+	if (!decision.ok) throw new DeskError(decision.sentence, 403);
 	if (agent.kind !== "agent") throw new DeskError("An agent key is required.", 403);
 	const path = cleanPath(input.path);
 	if (!path) throw new DeskError("That page is not in the library.");
@@ -667,7 +680,7 @@ export async function saveAgentSuggestion(
 	const name = suggestionName(agent.workspaceId, agent.id, input.session);
 	if (!allows(agent, name, true)) throw new DeskError("This key cannot change that copy.", 403);
 	const existingCopy = await getRepo(env.WORKSPACE, name);
-	if (!existingCopy && (await openSuggestionCount(env.DB, agent.workspaceId)) >= limitsOf(env).openSuggestions) {
+	if (!existingCopy && (await openSuggestionCount(env.DB, agent.workspaceId)) >= (await effectiveLimits(env, agent.workspaceId)).openSuggestions) {
 		throw new DeskError(LIMIT_MESSAGE.openSuggestions, 429);
 	}
 	const library = await ensureLibrary(env.WORKSPACE, agent.workspaceId);
