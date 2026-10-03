@@ -12,6 +12,7 @@ One file per live run, named `YYYY-MM-DD-<what>.md`. A run log is the evidence t
 | [2026-10-02-live-library.md](2026-10-02-live-library.md) | The live library on stylebook.dev after the line-level review fixes, including the overlapping pair, the combined page, and History. |
 | [2026-10-02-readme-first-run.md](2026-10-02-readme-first-run.md) | The run instructions followed on an empty setup, the gaps that turned up, and the deletion of that trial. |
 | [2026-10-02-teams.md](2026-10-02-teams.md) | Workspaces, email sign-in, invites, and connecting an agent on the live service. |
+| [2026-10-02-review-fixes.md](2026-10-02-review-fixes.md) | Confirm page, owner and member on People and agents, and the signed-in header on the live service. |
 
 ## What a run log contains
 

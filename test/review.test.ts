@@ -247,7 +247,10 @@ describe("review screen", () => {
 		const letter = inbox.at(-1)?.text ?? "";
 		const secret = letter.match(/\/s\/([0-9a-f]{64})/)?.[1] ?? "";
 		expect(secret).toHaveLength(64);
-		const signed = await fetch(`${origin}/s/${secret}`, { redirect: "manual" });
+		const preview = await fetch(`${origin}/s/${secret}`, { redirect: "manual" });
+		expect(preview.status).toBe(200);
+		expect(await preview.text()).toContain("Sign in to");
+		const signed = await fetch(`${origin}/s/${secret}`, { method: "POST", redirect: "manual" });
 		expect(signed.status).toBe(303);
 		const set = signed.headers.getSetCookie?.().find((item) => item.startsWith("stylebook=")) ?? "";
 		expect(set).toContain("HttpOnly");

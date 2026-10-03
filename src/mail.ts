@@ -33,43 +33,74 @@ function randomSecret(): string {
 	return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function sendsSince(db: D1Database, column: "email" | "ip", value: string, since: string): Promise<number> {
-	const sql =
-		column === "email"
-			? `SELECT COUNT(*) AS n FROM sign_in_sends WHERE email = ?1 AND sent_at >= ?2`
-			: `SELECT COUNT(*) AS n FROM sign_in_sends WHERE ip = ?1 AND sent_at >= ?2`;
-	const row = await db.prepare(sql).bind(value, since).first<{ n: number }>();
-	return row?.n ?? 0;
+function wrote(result: D1Result): number {
+	return result.meta?.changes ?? 0;
 }
 
-export async function withinSignInLimit(env: Env, email: string, ip: string): Promise<boolean> {
+/**
+ * Count and insert in one statement, so parallel requests cannot all pass.
+ * A Workers Rate Limiting binding cannot do this hour-long cap: its period is
+ * only 10 or 60 seconds, and the counter is local to one location and
+ * eventually consistent.
+ * https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/
+ * D1 runs one statement to a commit.
+ * https://developers.cloudflare.com/d1/worker-api/d1-database/#batch
+ */
+export async function claimSignInSend(env: Env, email: string, ip: string): Promise<boolean> {
 	const limits = limitsOf(env);
+	const now = new Date().toISOString();
 	const since = new Date(Date.now() - 3_600_000).toISOString();
-	const byEmail = await sendsSince(env.DB, "email", email, since);
-	if (byEmail >= limits.signInEmailsPerHour) return false;
-	const byIp = await sendsSince(env.DB, "ip", ip, since);
-	return byIp < limits.signInEmailsPerIpPerHour;
+	const result = await env.DB.prepare(
+		`INSERT INTO sign_in_sends (email, ip, sent_at)
+     SELECT ?1, ?2, ?3
+     WHERE (SELECT COUNT(*) FROM sign_in_sends WHERE email = ?1 AND sent_at >= ?4) < ?5
+       AND (SELECT COUNT(*) FROM sign_in_sends WHERE ip = ?2 AND sent_at >= ?4) < ?6
+       AND (SELECT COUNT(*) FROM sign_in_sends WHERE sent_at >= ?4) < ?7`,
+	)
+		.bind(
+			email,
+			ip,
+			now,
+			since,
+			limits.signInEmailsPerHour,
+			limits.signInEmailsPerIpPerHour,
+			limits.signInEmailsGlobalPerHour,
+		)
+		.run();
+	return wrote(result) > 0;
 }
 
-function letter(origin: string, url: string, workspaceName: string | null): { subject: string; text: string; html: string } {
-	const where = workspaceName ? ` for ${workspaceName}` : "";
+/** Letters, digits, spaces, and basic punctuation, at most 40 characters. */
+const EMAIL_NAME = /^[A-Za-z0-9 .,''&\-()]+$/;
+
+export function emailWorkspaceName(name: string | null | undefined): string | null {
+	if (!name) return null;
+	const trimmed = name.trim().replace(/\s+/g, " ");
+	if (trimmed.length < 1 || trimmed.length > 40) return null;
+	if (!EMAIL_NAME.test(trimmed)) return null;
+	return trimmed;
+}
+
+function letter(
+	url: string,
+	purpose: LinkDraft["purpose"],
+	workspaceName: string | null,
+): { subject: string; text: string; html: string } {
+	const safe = purpose === "invite" ? emailWorkspaceName(workspaceName) : null;
+	const line =
+		purpose === "start"
+			? "Open this link to open your new workspace. It works once and expires in 15 minutes."
+			: safe
+				? `Open this link to sign in to "${safe}". It works once and expires in 15 minutes.`
+				: "Open this link to sign in. It works once and expires in 15 minutes.";
 	const subject = "Sign in to Stylebook";
-	const text = [
-		"Stylebook",
-		"",
-		`Open this link to sign in${where}. It works once and expires in 15 minutes.`,
-		"",
-		url,
-		"",
-		"If you did not ask for this, you can ignore it.",
-	].join("\n");
+	const text = ["Stylebook", "", line, "", url, "", "If you did not ask for this, you can ignore it."].join("\n");
 	const html = `<!DOCTYPE html><html lang="en"><body style="font-family: Georgia, serif; color: #1B1D21; background: #FCFCFA;">
 <p style="font-style: italic; font-size: 28px;">Stylebook</p>
-<p>Open this link to sign in${escapeHtml(where)}. It works once and expires in 15 minutes.</p>
+<p>${escapeHtml(line)}</p>
 <p><a href="${escapeHtml(url)}">Sign in</a></p>
 <p style="color: #5E6167;">If you did not ask for this, you can ignore it.</p>
 </body></html>`;
-	void origin;
 	return { subject, text, html };
 }
 
@@ -85,43 +116,19 @@ export interface LinkDraft {
 	invitedBy?: string | null;
 }
 
-/**
- * Store a hashed link and send it. Returns a plain message when a limit is
- * reached. A missing address still looks the same to the caller when
- * `quiet` is set, so the screen does not say whether an address is known.
- */
-const SENT = "Check your inbox. The link works once and expires in 15 minutes.";
+export const SENT = "Check your inbox. The link works once and expires in 15 minutes.";
 
-/** Count an attempt that does not send, so an unknown address looks the same. */
+/** The same reply for every address, so sign-in does not reveal who has an account. */
+export const SIGN_IN_ACK = "If that address is in a workspace, a link is on its way.";
+
 export type SendResult =
 	| { ok: true; message: string }
 	| { ok: false; message: string; status: number };
 
-export async function noteSignInAttempt(env: Env, request: Request, email: string): Promise<SendResult> {
-	const normalized = normalizeEmail(email);
-	if (!normalized) return { ok: false, message: "Enter an email address.", status: 400 };
-	const ip = clientIp(request);
-	if (!(await withinSignInLimit(env, normalized, ip))) {
-		return { ok: false, message: LIMIT_MESSAGE.signIn, status: 429 };
-	}
-	await env.DB.prepare(`INSERT INTO sign_in_sends (email, ip, sent_at) VALUES (?1, ?2, ?3)`)
-		.bind(normalized, ip, new Date().toISOString())
-		.run();
-	return { ok: true, message: SENT };
-}
-
-export async function issueSignInLink(
-	env: Env,
-	request: Request,
-	origin: string,
-	draft: LinkDraft,
-): Promise<SendResult> {
+/** Store a hashed link and send it. The caller has already claimed a send. */
+export async function sendStoredLink(env: Env, origin: string, draft: LinkDraft): Promise<SendResult> {
 	const email = normalizeEmail(draft.email);
 	if (!email) return { ok: false, message: "Enter an email address.", status: 400 };
-	const ip = clientIp(request);
-	if (!(await withinSignInLimit(env, email, ip))) {
-		return { ok: false, message: LIMIT_MESSAGE.signIn, status: 429 };
-	}
 	if (!env.EMAIL) return { ok: false, message: "Sign-in email is not ready yet.", status: 503 };
 
 	const secret = randomSecret();
@@ -143,12 +150,9 @@ export async function issueSignInLink(
 			expires,
 		)
 		.run();
-	await env.DB.prepare(`INSERT INTO sign_in_sends (email, ip, sent_at) VALUES (?1, ?2, ?3)`)
-		.bind(email, ip, now.toISOString())
-		.run();
 
 	const url = `${origin.replace(/\/$/, "")}/s/${secret}`;
-	const message = letter(origin, url, draft.workspaceName ?? null);
+	const message = letter(url, draft.purpose, draft.purpose === "start" ? null : draft.workspaceName ?? null);
 	try {
 		await env.EMAIL.send({
 			to: email,
@@ -161,6 +165,21 @@ export async function issueSignInLink(
 		return { ok: false, message: "The sign-in email could not be sent. Try again in a little while.", status: 503 };
 	}
 	return { ok: true, message: SENT };
+}
+
+export async function issueSignInLink(
+	env: Env,
+	request: Request,
+	origin: string,
+	draft: LinkDraft,
+): Promise<SendResult> {
+	const email = normalizeEmail(draft.email);
+	if (!email) return { ok: false, message: "Enter an email address.", status: 400 };
+	if (!env.EMAIL) return { ok: false, message: "Sign-in email is not ready yet.", status: 503 };
+	if (!(await claimSignInSend(env, email, clientIp(request)))) {
+		return { ok: false, message: LIMIT_MESSAGE.signIn, status: 429 };
+	}
+	return sendStoredLink(env, origin, { ...draft, email });
 }
 
 export interface StoredLink {

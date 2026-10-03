@@ -25,8 +25,11 @@ export function memoryD1(): D1Database {
 					) as never[];
 					return {
 						async run() {
-							statement.run(...args);
-							return { success: true };
+							const info = statement.run(...args);
+							return {
+								success: true,
+								meta: { changes: Number(info.changes ?? 0), last_row_id: Number(info.lastInsertRowid ?? 0) },
+							};
 						},
 						async first<T>() {
 							const row = statement.get(...args);

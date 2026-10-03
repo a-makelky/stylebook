@@ -41,18 +41,24 @@ export async function issueGrant(
 	return token;
 }
 
+export async function revokeGrants(db: D1Database, actorId: string): Promise<void> {
+	await db.prepare(`DELETE FROM access_grants WHERE actor_id = ?1`).bind(actorId).run();
+}
+
 export async function grantByToken(db: D1Database, token: string): Promise<Grant | null> {
 	const row = await db
 		.prepare(
-			`SELECT actor_id, repo_name, can_write, expires_at
-       FROM access_grants WHERE token_hash = ?1`,
+			`SELECT g.actor_id, g.repo_name, g.can_write, g.expires_at
+       FROM access_grants g
+       WHERE g.token_hash = ?1
+         AND EXISTS (SELECT 1 FROM actor_keys k WHERE k.actor_id = g.actor_id)`,
 		)
 		.bind(await hashKey(token))
 		.first<{ actor_id: string; repo_name: string; can_write: number; expires_at: string }>();
 	if (!row) return null;
 	if (Date.parse(row.expires_at) <= Date.now()) return null;
 	const actor = await actorById(db, row.actor_id);
-	if (!actor) return null;
+	if (!actor || actor.removedAt) return null;
 	return {
 		actor,
 		repoName: row.repo_name,

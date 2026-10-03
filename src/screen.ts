@@ -3,19 +3,22 @@
 
 import { actorFromRequest, chooseCookie, clearChooseCookie, clearCookie, keyCookie, readCookie, CHOOSE_COOKIE, signOut } from "./auth";
 import { listActors } from "./actors";
-import { issueSignInLink, noteSignInAttempt, peekLink, takeLink } from "./mail";
+import { clientIp, issueSignInLink, normalizeEmail, peekLink, SENT, SIGN_IN_ACK, takeLink } from "./mail";
 import { LIMIT_MESSAGE, limitsOf } from "./limits";
 import {
 	chooseWorkspace,
 	cleanWorkspaceName,
 	connectAgent,
 	countMembers,
-	countWorkspaces,
+	deliverSignIn,
 	freshAgentKey,
 	joinFromLink,
 	memberships,
+	releaseWorkspaceStart,
+	removeAgent,
 	removePerson,
 	renameAgent,
+	reserveWorkspaceStart,
 	revokeAgentKey,
 	workspaceById,
 } from "./teams";
@@ -199,9 +202,8 @@ export function renderDesk(desk: Desk, suggestion: string | null): string {
 			: desk.suggestions.map((entry) => suggestionCard(desk, entry, entry.name === selected?.name)).join("");
 
 	return page({
-		main: `<p class="meta bar"><span>${esc(desk.workspaceName)}</span> <a href="/people">People and agents</a>
-      <form method="post" action="/sign-out"><button class="text" type="submit">Sign out</button></form></p>
-    <div class="desk">
+		account: accountLine(desk.workspaceName),
+		main: `<div class="desk">
       <nav class="contents"><h2>${icon("library", true)} Library</h2>${contents}</nav>
       <article class="page">
         <h1>${esc(desk.title)}</h1>
@@ -223,7 +225,14 @@ export function renderDesk(desk: Desk, suggestion: string | null): string {
 	});
 }
 
-function page(parts: { main: string }): string {
+function accountLine(workspaceName: string): string {
+	// A div, not a paragraph: a form inside a paragraph is lifted out of it,
+	// which split the workspace name and Sign out onto opposite sides of the line.
+	return `<div class="account"><span>${esc(workspaceName)}</span><a href="/people">People and agents</a>
+    <form method="post" action="/sign-out"><button class="text" type="submit">Sign out</button></form></div>`;
+}
+
+function page(parts: { main: string; account?: string }): string {
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -246,8 +255,19 @@ function page(parts: { main: string }): string {
   body, button, input { font-family: Newsreader, "Iowan Old Style", Palatino, serif; }
   a { color: inherit; }
   :focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
-  .wordmark { font-style: italic; font-weight: 500; font-size: 28px; line-height: 1.1; margin: 0; }
+  .wordmark { font-style: italic; font-weight: 500; font-size: 28px; line-height: 1.1; margin: 0; color: var(--ink); }
   header { padding: 28px 24px 0; }
+  .top {
+    display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline;
+    gap: 8px 24px; max-width: 1200px; margin: 0 auto; padding: 0 24px;
+  }
+  header:has(.top) { padding-left: 0; padding-right: 0; }
+  .account {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px;
+    margin: 0 0 0 auto; color: var(--graphite); font-style: italic; font-size: 16px; line-height: 1.5;
+  }
+  .account a, .account button.text { color: var(--graphite); font-size: 16px; font-style: italic; min-height: 0; }
+  .account form { margin: 0; }
   .desk {
     display: grid;
     grid-template-columns: 200px minmax(0, 640px) minmax(300px, 340px);
@@ -309,10 +329,16 @@ function page(parts: { main: string }): string {
   .history { border-top: 1px solid var(--rule); margin-top: 32px; }
   @media (max-width: 1099px) {
     header { padding-left: 16px; padding-right: 16px; }
+    header:has(.top) { padding-left: 0; padding-right: 0; }
+    .top { padding: 0 16px; }
     .desk { display: flex; flex-direction: column; padding: 24px 16px 48px; }
     .page { order: 1; }
     .suggestions { order: 2; }
     .contents { order: 3; }
+  }
+  @media (max-width: 640px) {
+    .top { flex-direction: column; align-items: flex-start; }
+    .account { margin-left: 0; }
   }
   @media (prefers-reduced-motion: reduce) {
     .settle .mark, .settle .caret, .settle .ring { color: var(--ink); text-decoration: none; font-style: normal; }
@@ -320,7 +346,7 @@ function page(parts: { main: string }): string {
 </style>
 </head>
 <body>
-<header><p class="wordmark">Stylebook</p></header>
+<header>${parts.account ? `<div class="top"><p class="wordmark">Stylebook</p>${parts.account}</div>` : `<p class="wordmark">Stylebook</p>`}</header>
 ${parts.main}
 </body>
 </html>`;
@@ -375,9 +401,10 @@ function setupMarkup(origin: string, workspaceId: string, key: string): string {
 function renderPeople(
 	workspaceName: string,
 	people: { id: string; name: string; you: boolean }[],
-	agents: { id: string; name: string; tool: string }[],
+	agents: { id: string; name: string; tool: string; yours: boolean }[],
 	message: string | null,
 	reveal: { name: string; key: string; origin: string; workspaceId: string } | null,
+	canRemove: boolean,
 ): string {
 	const note = message ? `<p class="overlap">${esc(message)}</p>` : "";
 	const shown = reveal
@@ -389,27 +416,32 @@ function renderPeople(
 		.map(
 			(person) => `<div class="person bar"><span>${esc(person.name)}${person.you ? " (you)" : ""}</span>
         ${
-					person.you
-						? ""
-						: `<form method="post" action="/people/remove">${hidden("id", person.id)}<button class="text" type="submit">Remove</button></form>`
+					canRemove && !person.you
+						? `<form method="post" action="/people/remove">${hidden("id", person.id)}<button class="text" type="submit">Remove</button></form>`
+						: ""
 				}</div>`,
 		)
 		.join("");
 	const agentRows = agents
-		.map(
-			(agent) => `<div class="agent">
-        <p>${esc(agent.name)} <span class="meta">${esc(agent.tool)}</span></p>
-        <form method="post" action="/agents/rename" class="bar">${hidden("id", agent.id)}
+		.map((agent) => {
+			const rename = agent.yours
+				? `<form method="post" action="/agents/rename" class="bar">${hidden("id", agent.id)}
           <label for="rename-${esc(agent.id)}">Name</label>
           <input id="rename-${esc(agent.id)}" name="name" value="${esc(agent.name)}" required>
           <button class="secondary" type="submit">Rename</button>
-        </form>
+        </form>`
+				: "";
+			return `<div class="agent">
+        <p>${esc(agent.name)} <span class="meta">${esc(agent.tool)}</span></p>
+        ${rename}
         <form method="post" action="/agents/revoke">${hidden("id", agent.id)}<button class="text" type="submit">Revoke the key</button></form>
         <form method="post" action="/agents/key">${hidden("id", agent.id)}<button class="text" type="submit">Make a new key</button></form>
-      </div>`,
-		)
+        <form method="post" action="/agents/remove">${hidden("id", agent.id)}<button class="text" type="submit">Remove</button></form>
+      </div>`;
+		})
 		.join("");
 	return page({
+		account: accountLine(workspaceName),
 		main: `<div class="sheet">
       <p class="meta"><a href="/">Library</a></p>
       <h1>${esc(workspaceName)}</h1>
@@ -436,9 +468,33 @@ function renderPeople(
         <button class="primary" type="submit">Connect</button>
       </form>
       ${agentRows}
-      <form method="post" action="/sign-out"><button class="text" type="submit">Sign out</button></form>
     </div>`,
 	});
+}
+
+function renderConfirm(label: string, secret: string): string {
+	return page({
+		main: `<div class="sheet">
+      <h1>${esc(label)}</h1>
+      <form method="post" action="/s/${esc(secret)}">
+        <button class="primary" type="submit">${esc(label)}</button>
+      </form>
+    </div>`,
+	});
+}
+
+async function confirmLabel(env: Env, link: { purpose: string; email: string; workspaceId: string | null }): Promise<string | null> {
+	if (link.purpose === "start") return "Open your new workspace";
+	if (link.purpose === "invite" && link.workspaceId) {
+		const workspace = await workspaceById(env.DB, link.workspaceId);
+		return workspace ? `Sign in to ${workspace.name}` : null;
+	}
+	if (link.purpose === "sign-in" || link.purpose === "choose") {
+		const homes = await memberships(env.DB, link.email);
+		if (homes.length === 1) return `Sign in to ${homes[0]!.workspace.name}`;
+		if (homes.length > 1) return "Sign in";
+	}
+	return null;
 }
 
 function renderChoose(workspaces: { id: string; name: string }[]): string {
@@ -479,7 +535,7 @@ async function fields(request: Request): Promise<URLSearchParams> {
 }
 
 
-export async function handleScreen(request: Request, env: Env): Promise<Response | null> {
+export async function handleScreen(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response | null> {
 	const url = new URL(request.url);
 	const path = url.pathname;
 	const link = /^\/s\/([0-9a-f]{64})$/.exec(path);
@@ -495,6 +551,7 @@ export async function handleScreen(request: Request, env: Env): Promise<Response
 		path === "/agents/rename" ||
 		path === "/agents/revoke" ||
 		path === "/agents/key" ||
+		path === "/agents/remove" ||
 		path === "/people/remove" ||
 		path === "/publish" ||
 		path === "/resolve" ||
@@ -504,8 +561,16 @@ export async function handleScreen(request: Request, env: Env): Promise<Response
 	if (!screen) return null;
 
 	try {
-		if (request.method === "GET" && link) {
-			const joined = await joinFromLink(env, link[1] ?? "");
+		if (link && (request.method === "GET" || request.method === "POST")) {
+			const secret = link[1] ?? "";
+			if (request.method === "GET") {
+				const pending = await peekLink(env, secret);
+				if (!pending) return html(renderGate("That link has expired or was already used."), 400);
+				const label = await confirmLabel(env, pending);
+				if (!label) return html(renderGate("That link has expired or was already used."), 400);
+				return html(renderConfirm(label, secret));
+			}
+			const joined = await joinFromLink(env, secret);
 			if ("message" in joined) return html(renderGate(joined.message), 400);
 			if ("choose" in joined) {
 				return html(renderChoose(joined.choose.workspaces), 200, { "Set-Cookie": chooseCookie(joined.choose.secret) });
@@ -516,28 +581,28 @@ export async function handleScreen(request: Request, env: Env): Promise<Response
 		if (request.method === "POST" && path === "/start") {
 			const form = await fields(request);
 			const workspace = cleanWorkspaceName(form.get("workspace") ?? "");
-			const email = form.get("email") ?? "";
+			const email = normalizeEmail(form.get("email") ?? "");
 			if (!workspace) return html(renderGate("Give the workspace a short name."), 400);
-			if ((await countWorkspaces(env.DB)) >= limitsOf(env).workspaces) {
-				return html(renderGate(LIMIT_MESSAGE.workspaces), 429);
-			}
+			if (!email) return html(renderGate("Enter an email address."), 400);
+			const reserved = await reserveWorkspaceStart(env, email, clientIp(request));
+			if ("message" in reserved) return html(renderGate(reserved.message), 429);
 			const sent = await issueSignInLink(env, request, url.origin, {
 				email,
 				purpose: "start",
 				workspaceName: workspace,
 			});
+			if (!sent.ok) await releaseWorkspaceStart(env, reserved.id);
 			return html(renderGate(sent.message, sent.ok ? "ok" : "error"), sent.ok ? 200 : sent.status);
 		}
 
 		if (request.method === "POST" && path === "/sign-in") {
 			const form = await fields(request);
-			const email = form.get("email") ?? "";
-			const homes = email.includes("@") ? await memberships(env.DB, email.trim().toLowerCase()) : [];
-			const sent =
-				homes.length === 0
-					? await noteSignInAttempt(env, request, email)
-					: await issueSignInLink(env, request, url.origin, { email, purpose: "sign-in" });
-			return html(renderGate(sent.message, sent.ok ? "ok" : "error"), sent.ok ? 200 : sent.status);
+			const email = normalizeEmail(form.get("email") ?? "");
+			if (!email) return html(renderGate("Enter an email address."), 400);
+			const work = deliverSignIn(env, url.origin, email, clientIp(request));
+			if (ctx) ctx.waitUntil(work);
+			else await work;
+			return html(renderGate(SIGN_IN_ACK, "ok"), 200);
 		}
 
 		if (request.method === "POST" && path === "/choose") {
@@ -627,6 +692,12 @@ export async function handleScreen(request: Request, env: Env): Promise<Response
 			return peoplePage(env, signed.actor, url.origin, null, { name: "This agent", key: minted.key });
 		}
 
+		if (signed.actor.kind === "person" && request.method === "POST" && path === "/agents/remove") {
+			const form = await fields(request);
+			const problem = await removeAgent(env, signed.actor, form.get("id") ?? "");
+			return peoplePage(env, signed.actor, url.origin, problem, null);
+		}
+
 		const scoped = scopedEnv(env, signed.actor.workspaceId);
 		try {
 			if (request.method === "POST" && path === "/suggestion") {
@@ -698,8 +769,6 @@ export async function handleScreen(request: Request, env: Env): Promise<Response
 	return html(renderGate(null), 405);
 }
 
-const SENT = "Check your inbox. The link works once and expires in 15 minutes.";
-
 function redirectCookies(location: string, cookies: string[]): Response {
 	const headers = new Headers({ Location: location });
 	for (const cookie of cookies) headers.append("Set-Cookie", cookie);
@@ -714,13 +783,19 @@ async function peoplePage(
 	reveal: { name: string; key: string } | null,
 ): Promise<Response> {
 	const workspace = await workspaceById(env.DB, actor.workspaceId);
+	const canRemove = workspace?.ownerId === actor.id;
 	const actors = await listActors(env.DB, actor.workspaceId);
 	const people = actors
 		.filter((item) => item.kind === "person")
 		.map((item) => ({ id: item.id, name: item.name, you: item.id === actor.id }));
 	const agents = actors
-		.filter((item) => item.kind === "agent" && item.ownerId === actor.id)
-		.map((item) => ({ id: item.id, name: item.name, tool: item.model ?? "Another tool" }));
+		.filter((item) => item.kind === "agent" && (canRemove || item.ownerId === actor.id))
+		.map((item) => ({
+			id: item.id,
+			name: item.name,
+			tool: item.model ?? "Another tool",
+			yours: item.ownerId === actor.id,
+		}));
 	return html(
 		renderPeople(
 			workspace?.name ?? "Workspace",
@@ -728,6 +803,7 @@ async function peoplePage(
 			agents,
 			message,
 			reveal ? { ...reveal, origin, workspaceId: actor.workspaceId } : null,
+			canRemove,
 		),
 	);
 }

@@ -171,7 +171,7 @@ export async function seedOpenSuggestions(
 		await env.DB.prepare(`INSERT INTO workspaces (id, name, created_at) VALUES (?1, ?2, ?3)`)
 			.bind(wantedId, wantedName, new Date().toISOString())
 			.run();
-		workspace = { id: wantedId, name: wantedName };
+		workspace = { id: wantedId, name: wantedName, ownerId: null };
 	}
 	const person = await registerActor(env.DB, {
 		id: roleId(workspace.id, PERSON_ROLE),
@@ -181,6 +181,9 @@ export async function seedOpenSuggestions(
 		email: "editor@stylebook.invalid",
 		key: input.personKey,
 	});
+	await env.DB.prepare(`UPDATE workspaces SET owner_id = ?1 WHERE id = ?2 AND owner_id IS NULL`)
+		.bind(person.id, workspace.id)
+		.run();
 	const researcher = await registerActor(env.DB, {
 		id: roleId(workspace.id, RESEARCHER_ROLE),
 		kind: "agent",
