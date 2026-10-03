@@ -17,7 +17,42 @@ function u32(view: DataView, offset: number, value: number) {
 	view.setUint32(offset, value, true);
 }
 
-/** A zip archive. Names use forward slashes. Nothing is compressed. */
+/** Bit 11: the entry name is UTF-8. */
+const UTF8_NAME = 0x800;
+
+export const SKILL_ZIP_MAX_FILES = 200;
+export const SKILL_ZIP_MAX_BYTES = 8 * 1024 * 1024;
+
+/** A library path that can safely become a zip entry name. */
+export function zipEntryAllowed(name: string): boolean {
+	if (!name || name.length > 240) return false;
+	if (name.startsWith("/") || name.includes("\\") || name.includes("..")) return false;
+	const parts = name.split("/");
+	if (parts.some((part) => part === "" || part === "." || part === "..")) return false;
+	return true;
+}
+
+/** Drop unsafe names, then stop at the file count and the total size. */
+export function zipEntries(
+	files: { name: string; data: Uint8Array }[],
+	limits: { maxFiles: number; maxBytes: number } = {
+		maxFiles: SKILL_ZIP_MAX_FILES,
+		maxBytes: SKILL_ZIP_MAX_BYTES,
+	},
+): { name: string; data: Uint8Array }[] {
+	const kept: { name: string; data: Uint8Array }[] = [];
+	let total = 0;
+	for (const file of files) {
+		if (!zipEntryAllowed(file.name)) continue;
+		if (kept.length >= limits.maxFiles) break;
+		if (total + file.data.byteLength > limits.maxBytes) break;
+		kept.push(file);
+		total += file.data.byteLength;
+	}
+	return kept;
+}
+
+/** A zip archive. Names use forward slashes and are marked UTF-8. Nothing is compressed. */
 export function zipStore(files: { name: string; data: Uint8Array }[]): Uint8Array {
 	const encoder = new TextEncoder();
 	const locals: Uint8Array[] = [];
@@ -30,6 +65,7 @@ export function zipStore(files: { name: string; data: Uint8Array }[]): Uint8Arra
 		const localView = new DataView(local.buffer);
 		u32(localView, 0, 0x04034b50);
 		u16(localView, 4, 20);
+		u16(localView, 6, UTF8_NAME);
 		u16(localView, 8, 0);
 		u32(localView, 14, crc);
 		u32(localView, 18, file.data.length);
@@ -43,6 +79,7 @@ export function zipStore(files: { name: string; data: Uint8Array }[]): Uint8Arra
 		u32(centralView, 0, 0x02014b50);
 		u16(centralView, 4, 20);
 		u16(centralView, 6, 20);
+		u16(centralView, 8, UTF8_NAME);
 		u16(centralView, 10, 0);
 		u32(centralView, 16, crc);
 		u32(centralView, 20, file.data.length);

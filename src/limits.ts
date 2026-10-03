@@ -15,6 +15,7 @@ export interface Limits {
 	signInEmailsPerHour: number;
 	signInEmailsPerIpPerHour: number;
 	signInEmailsGlobalPerHour: number;
+	oauthRegistrationsPerIpPerHour: number;
 }
 
 export const DEFAULT_LIMITS: Limits = {
@@ -27,6 +28,7 @@ export const DEFAULT_LIMITS: Limits = {
 	signInEmailsPerHour: 5,
 	signInEmailsPerIpPerHour: 20,
 	signInEmailsGlobalPerHour: 100,
+	oauthRegistrationsPerIpPerHour: 30,
 };
 
 function num(value: string | undefined, fallback: number): number {
@@ -47,6 +49,10 @@ export function limitsOf(env: Pick<Env, keyof LimitsAsEnv>): Limits {
 		signInEmailsPerHour: num(env.MAX_SIGN_IN_EMAILS_PER_HOUR, DEFAULT_LIMITS.signInEmailsPerHour),
 		signInEmailsPerIpPerHour: num(env.MAX_SIGN_IN_EMAILS_PER_IP_PER_HOUR, DEFAULT_LIMITS.signInEmailsPerIpPerHour),
 		signInEmailsGlobalPerHour: num(env.MAX_SIGN_IN_EMAILS_GLOBAL_PER_HOUR, DEFAULT_LIMITS.signInEmailsGlobalPerHour),
+		oauthRegistrationsPerIpPerHour: num(
+			env.MAX_OAUTH_REGISTRATIONS_PER_IP_PER_HOUR,
+			DEFAULT_LIMITS.oauthRegistrationsPerIpPerHour,
+		),
 	};
 }
 
@@ -60,6 +66,7 @@ type LimitsAsEnv = {
 	MAX_SIGN_IN_EMAILS_PER_HOUR?: string;
 	MAX_SIGN_IN_EMAILS_PER_IP_PER_HOUR?: string;
 	MAX_SIGN_IN_EMAILS_GLOBAL_PER_HOUR?: string;
+	MAX_OAUTH_REGISTRATIONS_PER_IP_PER_HOUR?: string;
 };
 
 export const LIMIT_MESSAGE = {

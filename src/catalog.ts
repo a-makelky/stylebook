@@ -2,7 +2,7 @@
 
 import type { Env } from "./env";
 import { ensureLibrary, listPaths, readBytes } from "./workspace";
-import { zipStore } from "./zip";
+import { zipEntries, zipStore } from "./zip";
 
 export interface LibraryPrompt {
 	name: string;
@@ -79,6 +79,13 @@ export function parseTeamConnections(text: string): TeamConnection[] {
 	return connections;
 }
 
+/** A display name. "notion" is shown as "Notion". The stored name is unchanged. */
+export function displayServerName(name: string): string {
+	const words = name.split(/[\s_-]+/).filter(Boolean);
+	if (words.length === 0) return name;
+	return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+}
+
 async function readText(env: Env, workspaceId: string, path: string): Promise<string | null> {
 	const library = await ensureLibrary(env.WORKSPACE, workspaceId);
 	const bytes = await readBytes(library.repo, path);
@@ -125,7 +132,7 @@ export async function skillZip(env: Env, workspaceId: string): Promise<Uint8Arra
 		const data = await readBytes(library.repo, path);
 		if (data) files.push({ name: path, data });
 	}
-	return zipStore(files);
+	return zipStore(zipEntries(files));
 }
 
 export function toolLabel(raw: string): string {

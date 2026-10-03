@@ -16,9 +16,11 @@ import { actorFromRequest, keyCookie, returnCookie, safeReturnPath } from "./aut
 import { toolLabel } from "./catalog";
 import type { Env } from "./env";
 import { signInMode } from "./identity";
+import { limitsOf } from "./limits";
+import { clientIp } from "./mail";
 import { handleMcp, type McpActorProps } from "./mcp";
 import { esc, page } from "./screen";
-import { chooseWorkspace, connectSignedInAgent, memberships } from "./teams";
+import { chooseWorkspace, connectSignedInAgent, memberships, workspaceById } from "./teams";
 
 type AppFetch = (request: Request, env: Env, ctx?: ExecutionContext) => Promise<Response>;
 
@@ -35,6 +37,7 @@ function providerFor(origin: string, fallback: AppFetch): OAuthProvider<Env> {
 		authorizeEndpoint: "/authorize",
 		tokenEndpoint: "/oauth/token",
 		clientRegistrationEndpoint: "/oauth/register",
+		clientRegistrationCallback: ({ clientMetadata }) => registrationPolicy(clientMetadata),
 		scopesSupported: ["suggest"],
 		requiredScopes: ["suggest"],
 		allowPrivateUseRedirectUris: true,
@@ -70,6 +73,46 @@ async function mcpAuthed(request: Request, env: Env, ctx: ExecutionContext): Pro
 	return handleMcp(request, env, props);
 }
 
+export const CLIENT_NAME_MAX = 80;
+export const REDIRECT_URI_MAX = 8;
+
+/**
+ * Dynamic registration stays public-client only, so every client uses PKCE.
+ * The provider rejects a public client that skips the code check.
+ * https://github.com/cloudflare/workers-oauth-provider/blob/main/docs/authorization-server.md
+ */
+export function registrationPolicy(
+	metadata: Record<string, unknown>,
+): { code: string; description: string } | undefined {
+	const name = metadata.client_name;
+	if (typeof name === "string" && [...name].length > CLIENT_NAME_MAX) {
+		return { code: "invalid_client_metadata", description: "The app name is too long." };
+	}
+	const uris = metadata.redirect_uris;
+	if (Array.isArray(uris) && uris.length > REDIRECT_URI_MAX) {
+		return { code: "invalid_client_metadata", description: "Too many return addresses." };
+	}
+	if (metadata.token_endpoint_auth_method !== "none") {
+		return { code: "invalid_client_metadata", description: "Sign in from the app. A shared secret is not accepted." };
+	}
+	return undefined;
+}
+
+/** One network can register only so many apps an hour. The count and the insert are one statement. */
+export async function claimOauthRegistration(env: Env, ip: string): Promise<boolean> {
+	const limits = limitsOf(env);
+	const now = new Date().toISOString();
+	const since = new Date(Date.now() - 3_600_000).toISOString();
+	const result = await env.DB.prepare(
+		`INSERT INTO oauth_registrations (ip, sent_at)
+     SELECT ?1, ?2
+     WHERE (SELECT COUNT(*) FROM oauth_registrations WHERE ip = ?1 AND sent_at >= ?3) < ?4`,
+	)
+		.bind(ip.slice(0, 80) || "unknown", now, since, limits.oauthRegistrationsPerIpPerHour)
+		.run();
+	return (result.meta?.changes ?? 0) > 0;
+}
+
 export async function oauthFetch(
 	request: Request,
 	env: Env,
@@ -77,8 +120,20 @@ export async function oauthFetch(
 	fallback: AppFetch,
 ): Promise<Response> {
 	if (!env.OAUTH_KV) return fallback(request, env, ctx);
-	const origin = new URL(request.url).origin;
-	return providerFor(origin, fallback).fetch(request, env, ctx);
+	const url = new URL(request.url);
+	if (request.method === "POST" && url.pathname === "/oauth/register") {
+		const allowed = await claimOauthRegistration(env, clientIp(request));
+		if (!allowed) {
+			return Response.json(
+				{
+					error: "temporarily_unavailable",
+					error_description: "Too many connections were started from this network. Try again in an hour.",
+				},
+				{ status: 429, headers: { "Retry-After": "3600" } },
+			);
+		}
+	}
+	return providerFor(url.origin, fallback).fetch(request, env, ctx);
 }
 
 function html(body: string, status = 200, extra?: Headers): Response {
@@ -111,7 +166,7 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
 
 async function showConsent(request: Request, env: Env, oauth: OAuthHelpers, url: URL): Promise<Response> {
 	const authRequest = await oauth.parseAuthRequest(request);
-	let signed = await actorFromRequest(request, env);
+	const signed = await actorFromRequest(request, env);
 	const cookies: string[] = [];
 	if (!signed || signed.actor.kind !== "person") {
 		const back = safeReturnPath(`${url.pathname}${url.search}`);
@@ -123,47 +178,41 @@ async function showConsent(request: Request, env: Env, oauth: OAuthHelpers, url:
 		return plain("Sign in, then approve this connection.", 401);
 	}
 
-	const workspaceId = url.searchParams.get("workspace");
-	if (workspaceId && signed.actor.email && workspaceId !== signed.actor.workspaceId) {
-		const joined = await chooseWorkspace(env, signed.actor.email, workspaceId);
-		if (!("message" in joined)) {
-			signed = { actor: joined.actor, key: joined.secret };
-			cookies.push(keyCookie(joined.secret));
-		}
-	}
-
 	const person = signed.actor;
 	const details = await oauth.describeConsent(authRequest);
 	const consent = await oauth.beginConsent(authRequest);
-	const tool = toolLabel(details.clientName);
+	const registered = details.clientName.replace(/[\r\n]+/g, " ").trim().slice(0, 200);
+	const tool = toolLabel(registered);
 	const agentName = `${tool} for ${person.name}`.slice(0, 80);
+	const workspace = await workspaceById(env.DB, person.workspaceId);
+	const workspaceName = workspace?.name ?? "this workspace";
 	const homes = person.email ? await memberships(env.DB, person.email) : [];
-	const picker =
-		homes.length > 1
-			? `<h2>Workspace</h2>${homes
-					.map((home) => {
-						const next = new URL(url.pathname + url.search, url.origin);
-						next.searchParams.set("workspace", home.workspace.id);
-						const current = home.workspace.id === person.workspaceId ? " (this one)" : "";
-						return `<p><a href="${esc(`${next.pathname}${next.search}`)}">Open ${esc(home.workspace.name)}${current}</a></p>`;
-					})
-					.join("")}`
-			: "";
-	const published = details.clientDomain
-		? `<p>Published by ${esc(details.clientDomain)}.</p>`
-		: `<p>This app named itself. The name is not checked.</p>`;
+	const back = authorizeReturn(url);
+	const picker = homes
+		.filter((home) => home.workspace.id !== person.workspaceId)
+		.map(
+			(home) => `<form method="post" action="/authorize">
+        <input type="hidden" name="decision" value="switch">
+        <input type="hidden" name="workspace" value="${esc(home.workspace.id)}">
+        <input type="hidden" name="return" value="${esc(back)}">
+        <button class="text" type="submit">Open ${esc(home.workspace.name)}</button>
+      </form>`,
+		)
+		.join("");
+	const published = details.clientDomain ? `<p>Published by ${esc(details.clientDomain)}.</p>` : "";
 	const loopback = details.redirectIsLoopback
 		? `<p>This returns you to an app on your computer. Continue only if you just started from it.</p>`
 		: "";
 	const body = `<div class="sheet">
-      <h1>Approve</h1>
-      <p>${esc(tool)} will be able to read your team's library and suggest changes as <em>${esc(agentName)}</em>. It cannot publish.</p>
+      <h1 class="return">This returns you to ${esc(details.redirectHost)}</h1>
+      <p>An app calling itself '${esc(registered)}' is asking. Only approve if you just added Stylebook to that app.</p>
+      <p>${esc(tool)} (registered as ${esc(registered)}) will be able to read the ${esc(workspaceName)} library and suggest changes as <em>${esc(agentName)}</em>. It cannot publish.</p>
       ${published}
-      <p>This returns you to ${esc(details.redirectHost)}.</p>
       ${loopback}
-      ${picker}
+      ${picker ? `<h2>Workspace</h2>${picker}` : ""}
       <form method="post" action="/authorize">
         <input type="hidden" name="handle" value="${esc(consent.handle)}">
+        <input type="hidden" name="workspace" value="${esc(person.workspaceId)}">
         <button class="primary" type="submit" name="decision" value="approve">Approve</button>
         <button class="text" type="submit" name="decision" value="deny">Don't allow</button>
       </form>
@@ -175,8 +224,29 @@ async function showConsent(request: Request, env: Env, oauth: OAuthHelpers, url:
 	return html(body, 200, headers);
 }
 
+function authorizeReturn(url: URL): string {
+	const next = new URL(url.pathname + url.search, url.origin);
+	next.searchParams.delete("workspace");
+	return safeReturnPath(`${next.pathname}${next.search}`) ?? "/authorize";
+}
+
+async function switchWorkspace(request: Request, env: Env, form: FormData): Promise<Response> {
+	const signed = await actorFromRequest(request, env);
+	if (!signed || signed.actor.kind !== "person" || !signed.actor.email) {
+		return plain("Sign in, then choose a workspace.", 401);
+	}
+	const back = safeReturnPath(String(form.get("return") ?? ""));
+	if (!back) return plain("Go back and choose a workspace.", 400);
+	const joined = await chooseWorkspace(env, signed.actor.email, String(form.get("workspace") ?? ""));
+	if ("message" in joined) return plain(joined.message, 403);
+	const headers = new Headers({ Location: back });
+	headers.append("Set-Cookie", keyCookie(joined.secret));
+	return new Response(null, { status: 303, headers });
+}
+
 async function finishConsent(request: Request, env: Env, oauth: OAuthHelpers): Promise<Response> {
 	const form = await request.formData();
+	if (form.get("decision") === "switch") return switchWorkspace(request, env, form);
 	const handle = String(form.get("handle") ?? "");
 	if (form.get("decision") !== "approve") {
 		const denied = await oauth.denyConsent(request, handle);
@@ -184,10 +254,13 @@ async function finishConsent(request: Request, env: Env, oauth: OAuthHelpers): P
 	}
 	const signed = await actorFromRequest(request, env);
 	if (!signed || signed.actor.kind !== "person") return plain("Sign in, then approve this connection.", 401);
+	if (String(form.get("workspace") ?? "") !== signed.actor.workspaceId) {
+		return plain("Approve this for the workspace you are in.", 403);
+	}
 	const approved = await oauth.approveConsent(request, handle, { scope: ["suggest"] });
 	const client = await oauth.lookupClient(approved.request.clientId);
 	const tool = toolLabel(client?.clientName || approved.request.clientId);
-	const connected = await connectSignedInAgent(env, signed.actor, tool);
+	const connected = await connectSignedInAgent(env, signed.actor, tool, approved.request.clientId);
 	if ("message" in connected) return plain(connected.message, 403);
 	const completed = await oauth.completeAuthorization({
 		request: approved.request,

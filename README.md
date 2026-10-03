@@ -27,7 +27,7 @@ This table is the honest state of the code, not a roadmap.
 | Workspaces, email sign-in, invites, and connecting an agent | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-teams.md). Email links stay in the code and are switched off. |
 | Sign in with Cloudflare Access, Admin and Member, People | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-access-roles.md). |
 | Suspension on suggestion writes, admin page, second workspace, People | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-tracer-8-review.md). |
-| Connect your tools: sign in from the tool, skills, team connections | Local tests and pictures on 2026-10-03. Not deployed: Wrangler has no login on this run. See [the run log](docs/runs/2026-10-03-connect-tools.md). |
+| Connect your tools: sign in from the tool, skills, team connections | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-connect-tools.md). |
 
 Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for a piece, treat that piece as unproven.
 
@@ -37,11 +37,11 @@ Stylebook is hosted at [stylebook.dev](https://stylebook.dev). A writer opens th
 
 1. Sign in. Stylebook asks Cloudflare Access for a one-time code to your email. A new address with no workspace can start one, or join from an invitation. The person who starts a workspace is an Admin. The older email-link sign-in is still in the project and switched off.
 2. From People, an Admin invites a colleague by email and picks Admin or Member. They join, with that role, the next time they sign in. Members suggest. An Admin publishes, unless Members can publish is on. The person who started the workspace cannot be removed or demoted.
-3. Open Connect your tools from the workspace menu. Each tool has one step: paste the address and sign in, or one click, or one line to paste. Approving names the connection after the tool. On People it can be renamed, and Revoke ends it. A setup for other tools is behind Other tools.
+3. Open Connect your tools from the workspace menu. The page asks which tool you use, with Claude already selected. Copy the address, paste it in that tool, and sign in. Approving names the connection after the tool. On People it can be renamed, and Revoke ends it. Download skills, a folder on your computer, and the team's other servers are under More.
 
 A workspace is one team. Its library, suggestions, people, agents and History stay inside it. Another workspace cannot see or change them.
 
-When a limit is reached, the page says so in plain language. The starting limits are 40 workspaces, 2 per email address and 5 from one network per day, 25 people and 40 agents in one workspace, 200 open suggestions in one workspace, 5 sign-in emails per address per hour, and 100 sign-in emails an hour in total.
+When a limit is reached, the page says so in plain language. The starting limits are 40 workspaces, 2 per email address and 5 from one network per day, 25 people and 40 agents in one workspace, 200 open suggestions in one workspace, 5 sign-in emails per address per hour, 100 sign-in emails an hour in total, and 30 new tool sign-ins an hour from one network.
 
 ## Run it yourself
 
@@ -79,6 +79,12 @@ npx wrangler d1 migrations apply stylebook --remote
 The Workers binding addresses one namespace, chosen in `wrangler.toml`. Its methods take a repo name, not a namespace, so a team is a prefix on every repo (`{id}-library` and `{id}-sug-…`) in the namespace `stylebook`. A copy made with `fork()` stays in that namespace. If the namespace does not exist yet, Artifacts creates it when the first repo is created. See the [Workers binding](https://developers.cloudflare.com/artifacts/api/workers-binding/) and [Namespaces](https://developers.cloudflare.com/artifacts/concepts/namespaces/). Older namespaces named `stylebook-review` and `stylebook-demo` stay in the account and are not bound.
 
 The command asks before it applies. A session with no prompt continues.
+
+Sign-in from a tool stores its grants in Workers KV. Create a namespace and put its id on the `OAUTH_KV` binding. Leave the binding name as `OAUTH_KV`. The id in this file belongs to the hosted Stylebook account. See [KV](https://developers.cloudflare.com/workers/runtime-apis/kv/).
+
+```sh
+npx wrangler kv namespace create OAUTH_KV
+```
 
 `name` at the top of `wrangler.toml` is the Worker. Deploy updates the Worker of that name. The two `name` values under `[[workflows]]`, and `workflow_name` under the trigger, have to be unique in the account. Wrangler warns when one of those names already belongs to another Worker, and deploying reassigns it. Rename the three lines before you deploy if the names are taken. To run a second copy beside an existing one, change the Worker name, the database name and id, both namespace lines, and the three workflow lines.
 

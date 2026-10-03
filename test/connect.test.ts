@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { registerActor } from "../src/actors";
-import { parseTeamConnections, publicServerUrl, toolLabel } from "../src/catalog";
+import { displayServerName, parseTeamConnections, publicServerUrl, toolLabel } from "../src/catalog";
+import { zipEntries, zipEntryAllowed, zipStore } from "../src/zip";
 import type { Env } from "../src/env";
 import { writtenBy } from "../src/review";
 import { STARTER_SKILL_PATH } from "../src/seed";
@@ -53,6 +54,8 @@ describe("team connections stay public", () => {
 			}),
 		);
 		expect(parsed).toEqual([{ name: "notion", url: "https://mcp.notion.com/mcp" }]);
+		expect(displayServerName("notion")).toBe("Notion");
+		expect(displayServerName("my_server")).toBe("My Server");
 		expect(JSON.stringify(parsed)).not.toContain("hidden");
 		expect(JSON.stringify(parsed)).not.toContain("access_token");
 	});
@@ -63,6 +66,43 @@ describe("team connections stay public", () => {
 		expect(toolLabel("Visual Studio Code")).toBe("VS Code");
 		expect(writtenBy("Claude for Dana", "Dana")).toBe("Written by Claude for Dana");
 		expect(writtenBy("Researcher", "Editor")).toBe("Written by Researcher for Editor");
+	});
+});
+
+describe("skill download stays inside the library", () => {
+	it("skips a name that climbs out", () => {
+		expect(zipEntryAllowed("skills/../secret")).toBe(false);
+		expect(zipEntryAllowed("skills\\secret")).toBe(false);
+		expect(zipEntryAllowed("/etc/passwd")).toBe(false);
+		expect(zipEntryAllowed("skills/interview-to-draft/SKILL.md")).toBe(true);
+		const kept = zipEntries([
+			{ name: "skills/../secret", data: new Uint8Array([1]) },
+			{ name: "skills\\secret", data: new Uint8Array([1]) },
+			{ name: "/etc/passwd", data: new Uint8Array([1]) },
+			{ name: "skills/ok/SKILL.md", data: new Uint8Array([2]) },
+		]);
+		expect(kept.map((file) => file.name)).toEqual(["skills/ok/SKILL.md"]);
+	});
+
+	it("stops after the file count and the total size", () => {
+		const files = [1, 2, 3].map((n) => ({ name: `skills/${n}/SKILL.md`, data: new Uint8Array(10) }));
+		expect(zipEntries(files, { maxFiles: 2, maxBytes: 1000 })).toHaveLength(2);
+		expect(zipEntries(files, { maxFiles: 10, maxBytes: 25 })).toHaveLength(2);
+	});
+
+	it("marks the entry name as UTF-8", () => {
+		const zip = zipStore([{ name: "skills/café/SKILL.md", data: new Uint8Array([1]) }]);
+		const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+		expect(view.getUint16(6, true) & 0x800).toBe(0x800);
+		let central = -1;
+		for (let index = 0; index < zip.length - 4; index++) {
+			if (view.getUint32(index, true) === 0x02014b50) {
+				central = index;
+				break;
+			}
+		}
+		expect(central).toBeGreaterThan(0);
+		expect(view.getUint16(central + 8, true) & 0x800).toBe(0x800);
 	});
 });
 
@@ -100,6 +140,7 @@ describe("sign in from a tool", () => {
 			role: "admin",
 			key: "dana-person-key-0001",
 		});
+		await db.prepare(`UPDATE workspaces SET name = 'North' WHERE id = 'north'`).bind().run();
 		session = `stylebook=${encodeURIComponent(await openSession(db, actor))}`;
 		const server = await serveWorker(env);
 		origin = server.url;
@@ -161,31 +202,53 @@ describe("sign in from a tool", () => {
 		const consent = await fetch(authorize, { headers: { Cookie: session }, redirect: "manual" });
 		expect(consent.status).toBe(200);
 		const consentHtml = await consent.text();
-		expect(visible(consentHtml)).toContain("will be able to read your team's library and suggest changes as");
+		expect(visible(consentHtml)).toContain("This returns you to 127.0.0.1");
+		expect(consentHtml).toContain('<h1 class="return">This returns you to 127.0.0.1</h1>');
+		expect(visible(consentHtml)).toContain(
+			"An app calling itself 'Claude' is asking. Only approve if you just added Stylebook to that app.",
+		);
+		expect(visible(consentHtml)).toContain("Claude (registered as Claude)");
+		expect(visible(consentHtml)).toContain("the North library");
 		expect(visible(consentHtml)).toContain("Claude for Dana");
 		expect(visible(consentHtml)).toContain("It cannot publish.");
+		expect(consentHtml).not.toContain("The name is not checked");
 		expect(BANNED.test(visible(consentHtml))).toBe(false);
 		const handle = consentHtml.match(/name="handle" value="([^"]+)"/)?.[1] ?? "";
 		expect(handle).not.toBe("");
+		const workspaceField = consentHtml.match(/name="workspace" value="([^"]+)"/)?.[1] ?? "";
+		expect(workspaceField).toBe("north");
 
 		const waiting = await fetch(`${origin}/connect`, { headers: { Cookie: session } });
 		const waitingHtml = await waiting.text();
+		expect(waitingHtml).toContain("Which tool do you use?");
+		expect(waitingHtml).toContain('aria-current="page">Claude');
 		expect(waitingHtml).toContain("Waiting for your first connection");
-		expect(waitingHtml).toContain("Customize, then Connectors");
-		expect(waitingHtml).toContain("Business, Enterprise, and Edu");
-		expect(waitingHtml).toContain("claude mcp add --transport http stylebook");
-		expect(waitingHtml).toContain("vscode:mcp/install?");
+		expect(waitingHtml).toContain("Add custom connector");
+		expect(waitingHtml).toContain(">Copy<");
+		expect(waitingHtml).toContain(">More<");
+		expect(waitingHtml).toContain(">Notion<");
 		expect(waitingHtml).toContain("https://mcp.notion.com/mcp");
 		expect(waitingHtml).toContain("Download skills");
-		expect(waitingHtml).toContain("Other tools");
+		expect(waitingHtml).toContain(">Other<");
+		expect(waitingHtml).not.toContain("Business, Enterprise, and Edu");
+		expect(waitingHtml).not.toContain("claude mcp add --transport http stylebook");
 		expect(BANNED.test(visible(waitingHtml))).toBe(false);
 		expect(visible(waitingHtml).toLowerCase()).not.toContain("header");
+
+		const wrongWorkspace = await fetch(`${origin}/authorize`, {
+			method: "POST",
+			redirect: "manual",
+			headers: { Cookie: mergedCookie(session, consent), "Content-Type": "application/x-www-form-urlencoded" },
+			body: `handle=${encodeURIComponent(handle)}&decision=approve&workspace=south`,
+		});
+		expect(wrongWorkspace.status).toBe(403);
+		expect(await wrongWorkspace.text()).toContain("Approve this for the workspace you are in.");
 
 		const approved = await fetch(`${origin}/authorize`, {
 			method: "POST",
 			redirect: "manual",
 			headers: { Cookie: mergedCookie(session, consent), "Content-Type": "application/x-www-form-urlencoded" },
-			body: `handle=${encodeURIComponent(handle)}&decision=approve`,
+			body: `handle=${encodeURIComponent(handle)}&decision=approve&workspace=${encodeURIComponent(workspaceField)}`,
 		});
 		expect(approved.status).toBe(302);
 		const location = new URL(approved.headers.get("Location") ?? "");
@@ -287,5 +350,281 @@ describe("sign in from a tool", () => {
 		expect(await revoked.text()).toContain("The key no longer works.");
 		const after = await call("tools/list", {});
 		expect(after.status).toBe(401);
+	}, 60_000);
+
+	it("shows one tool at a time and remembers the choice", async () => {
+		const chatgpt = await fetch(`${origin}/connect?tool=chatgpt`, { headers: { Cookie: session } });
+		const chatgptHtml = await chatgpt.text();
+		expect(chatgptHtml).toContain("Business, Enterprise, and Edu");
+		expect(chatgptHtml).not.toContain("Add custom connector");
+		expect(chatgpt.headers.getSetCookie().join("\n")).toContain("stylebook_tool=chatgpt");
+		const remembered = await fetch(`${origin}/connect`, {
+			headers: { Cookie: `${session}; stylebook_tool=claude-code` },
+		});
+		const rememberedHtml = await remembered.text();
+		expect(rememberedHtml).toContain("claude mcp add --transport http stylebook");
+		expect(rememberedHtml).not.toContain("Add custom connector");
+		const vscode = await fetch(`${origin}/connect?tool=vscode`, { headers: { Cookie: session } });
+		expect(await vscode.text()).toContain("vscode:mcp/install?");
+	});
+
+	it("shows the registered name escaped, and rejects a loose registration", async () => {
+		const spoofName = "Claude <b>not</b>";
+		const redirectUri = "http://127.0.0.1:33418/callback";
+		const spoofed = await fetch(`${origin}/oauth/register`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				client_name: spoofName,
+				redirect_uris: [redirectUri],
+				grant_types: ["authorization_code", "refresh_token"],
+				response_types: ["code"],
+				token_endpoint_auth_method: "none",
+			}),
+		});
+		expect(spoofed.status).toBe(201);
+		const spoof = (await spoofed.json()) as { client_id: string };
+		const verifier = randomBytes(32).toString("base64url");
+		const challenge = createHash("sha256").update(verifier).digest("base64url");
+		const authorize = new URL("/authorize", origin);
+		authorize.searchParams.set("response_type", "code");
+		authorize.searchParams.set("client_id", spoof.client_id);
+		authorize.searchParams.set("redirect_uri", redirectUri);
+		authorize.searchParams.set("code_challenge", challenge);
+		authorize.searchParams.set("code_challenge_method", "S256");
+		authorize.searchParams.set("scope", "suggest");
+		authorize.searchParams.set("resource", `${origin}/mcp`);
+		authorize.searchParams.set("state", "spoof");
+		const consent = await fetch(authorize, { headers: { Cookie: session } });
+		const html = await consent.text();
+		expect(html).toContain("Claude &lt;b&gt;not&lt;/b&gt;");
+		expect(html).not.toContain("<b>not</b>");
+		expect(visible(html)).toContain("Claude (registered as Claude <b>not</b>)");
+
+		const longName = await fetch(`${origin}/oauth/register`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				client_name: "A".repeat(81),
+				redirect_uris: [redirectUri],
+				token_endpoint_auth_method: "none",
+			}),
+		});
+		expect(longName.status).toBe(400);
+		const many = await fetch(`${origin}/oauth/register`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				client_name: "Claude",
+				redirect_uris: Array.from({ length: 9 }, (_, index) => `https://example.com/cb/${index}`),
+				token_endpoint_auth_method: "none",
+			}),
+		});
+		expect(many.status).toBe(400);
+		const secret = await fetch(`${origin}/oauth/register`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				client_name: "Claude",
+				redirect_uris: [redirectUri],
+				token_endpoint_auth_method: "client_secret_basic",
+			}),
+		});
+		expect(secret.status).toBe(400);
+		const omitted = await fetch(`${origin}/oauth/register`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				client_name: "Claude",
+				redirect_uris: [redirectUri],
+			}),
+		});
+		expect(omitted.status).toBe(400);
+	});
+
+	it("caps registrations from one network", async () => {
+		const before = await db.prepare(`SELECT COUNT(*) AS n FROM oauth_registrations`).bind().first<{ n: number }>();
+		const previous = env.MAX_OAUTH_REGISTRATIONS_PER_IP_PER_HOUR;
+		env.MAX_OAUTH_REGISTRATIONS_PER_IP_PER_HOUR = String((before?.n ?? 0) + 1);
+		try {
+			const redirectUri = "http://127.0.0.1:33418/callback";
+			const body = {
+				client_name: "Claude",
+				redirect_uris: [redirectUri],
+				token_endpoint_auth_method: "none",
+			};
+			const allowed = await fetch(`${origin}/oauth/register`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			});
+			expect(allowed.status).toBe(201);
+			const blocked = await fetch(`${origin}/oauth/register`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			});
+			expect(blocked.status).toBe(429);
+		} finally {
+			env.MAX_OAUTH_REGISTRATIONS_PER_IP_PER_HOUR = previous;
+		}
+	});
+
+	it("reuses the same app and never replaces a hand-made key", async () => {
+		const hand = await registerActor(db, {
+			id: "handmade",
+			kind: "agent",
+			name: "Claude for Dana",
+			workspaceId: "north",
+			ownerId: "dana",
+			model: "Claude",
+			key: "hand-made-key-000000000001",
+		});
+		const handKeys = async () =>
+			(
+				await db
+					.prepare(`SELECT key_hash FROM actor_keys WHERE actor_id = ?1`)
+					.bind(hand.id)
+					.all<{ key_hash: string }>()
+			).results ?? [];
+		const before = await handKeys();
+		expect(before).toHaveLength(1);
+
+		const redirectUri = "http://127.0.0.1:43111/callback";
+		const resource = `${origin}/mcp`;
+		const register = async (name: string) => {
+			const response = await fetch(`${origin}/oauth/register`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					client_name: name,
+					redirect_uris: [redirectUri],
+					grant_types: ["authorization_code", "refresh_token"],
+					response_types: ["code"],
+					token_endpoint_auth_method: "none",
+				}),
+			});
+			expect(response.status).toBe(201);
+			return (await response.json()) as { client_id: string };
+		};
+		const approve = async (clientId: string) => {
+			const verifier = randomBytes(32).toString("base64url");
+			const challenge = createHash("sha256").update(verifier).digest("base64url");
+			const authorize = new URL("/authorize", origin);
+			authorize.searchParams.set("response_type", "code");
+			authorize.searchParams.set("client_id", clientId);
+			authorize.searchParams.set("redirect_uri", redirectUri);
+			authorize.searchParams.set("code_challenge", challenge);
+			authorize.searchParams.set("code_challenge_method", "S256");
+			authorize.searchParams.set("scope", "suggest");
+			authorize.searchParams.set("resource", resource);
+			authorize.searchParams.set("state", "again");
+			const consent = await fetch(authorize, { headers: { Cookie: session } });
+			const html = await consent.text();
+			const handle = html.match(/name="handle" value="([^"]+)"/)?.[1] ?? "";
+			const approved = await fetch(`${origin}/authorize`, {
+				method: "POST",
+				redirect: "manual",
+				headers: { Cookie: mergedCookie(session, consent), "Content-Type": "application/x-www-form-urlencoded" },
+				body: `handle=${encodeURIComponent(handle)}&decision=approve&workspace=north`,
+			});
+			expect(approved.status).toBe(302);
+			const mapped = await db
+				.prepare(`SELECT agent_id FROM oauth_agents WHERE client_id = ?1 AND owner_id = 'dana'`)
+				.bind(clientId)
+				.first<{ agent_id: string }>();
+			return mapped?.agent_id ?? "";
+		};
+
+		const first = await register("Claude");
+		const firstAgent = await approve(first.client_id);
+		expect(firstAgent).not.toBe("");
+		expect(firstAgent).not.toBe(hand.id);
+		const named = await db.prepare(`SELECT name FROM actors WHERE id = ?1`).bind(firstAgent).first<{ name: string }>();
+		expect(named?.name).toBe("Claude for Dana (2)");
+		const firstKeys = async () =>
+			(
+				await db
+					.prepare(`SELECT key_hash FROM actor_keys WHERE actor_id = ?1`)
+					.bind(firstAgent)
+					.all<{ key_hash: string }>()
+			).results ?? [];
+		expect(await firstKeys()).toHaveLength(1);
+		expect(await handKeys()).toEqual(before);
+
+		const again = await approve(first.client_id);
+		expect(again).toBe(firstAgent);
+		expect(await firstKeys()).toHaveLength(1);
+		expect(await handKeys()).toEqual(before);
+
+		const second = await register("Claude");
+		const secondAgent = await approve(second.client_id);
+		expect(secondAgent).not.toBe(firstAgent);
+		const secondName = await db.prepare(`SELECT name FROM actors WHERE id = ?1`).bind(secondAgent).first<{ name: string }>();
+		expect(secondName?.name).toBe("Claude for Dana (3)");
+		expect(await handKeys()).toEqual(before);
+	}, 60_000);
+
+	it("switches workspace on submit, not when the page opens", async () => {
+		await registerActor(db, {
+			id: "danasouth",
+			kind: "person",
+			name: "Dana",
+			workspaceId: "south",
+			email: "dana@stylebook.invalid",
+			role: "admin",
+			key: "dana-south-key-00000001",
+		});
+		await db.prepare(`UPDATE workspaces SET name = 'South' WHERE id = 'south'`).bind().run();
+		const redirectUri = "http://127.0.0.1:43112/callback";
+		const registered = await fetch(`${origin}/oauth/register`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				client_name: "Claude",
+				redirect_uris: [redirectUri],
+				grant_types: ["authorization_code", "refresh_token"],
+				response_types: ["code"],
+				token_endpoint_auth_method: "none",
+			}),
+		});
+		expect(registered.status).toBe(201);
+		const client = (await registered.json()) as { client_id: string };
+		const verifier = randomBytes(32).toString("base64url");
+		const challenge = createHash("sha256").update(verifier).digest("base64url");
+		const authorize = new URL("/authorize", origin);
+		authorize.searchParams.set("response_type", "code");
+		authorize.searchParams.set("client_id", client.client_id);
+		authorize.searchParams.set("redirect_uri", redirectUri);
+		authorize.searchParams.set("code_challenge", challenge);
+		authorize.searchParams.set("code_challenge_method", "S256");
+		authorize.searchParams.set("scope", "suggest");
+		authorize.searchParams.set("resource", `${origin}/mcp`);
+		authorize.searchParams.set("state", "switch");
+		authorize.searchParams.set("workspace", "south");
+		const opened = await fetch(authorize, { headers: { Cookie: session } });
+		const openedHtml = await opened.text();
+		expect(visible(openedHtml)).toContain("the North library");
+		expect(visible(openedHtml)).not.toContain("the South library");
+		expect(openedHtml).toContain("Open South");
+		expect(openedHtml).not.toMatch(/href="[^"]*workspace=/);
+		expect(opened.headers.getSetCookie().join("\n")).not.toContain("stylebook=");
+
+		authorize.searchParams.delete("workspace");
+		const switched = await fetch(`${origin}/authorize`, {
+			method: "POST",
+			redirect: "manual",
+			headers: { Cookie: session, "Content-Type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				decision: "switch",
+				workspace: "south",
+				return: `${authorize.pathname}${authorize.search}`,
+			}),
+		});
+		expect(switched.status).toBe(303);
+		const next = cookiesOf(switched);
+		expect(next).toContain("stylebook=");
+		const south = await fetch(new URL(switched.headers.get("Location") ?? "", origin), { headers: { Cookie: next } });
+		expect(visible(await south.text())).toContain("the South library");
 	}, 60_000);
 });

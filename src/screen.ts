@@ -355,6 +355,15 @@ export function page(parts: { main: string; account?: string }): string {
   .sign-in input, .sheet input, .sheet select { min-height: 44px; margin: 8px 0 16px; padding: 8px 12px; border: 1px solid var(--ink); border-radius: 3px; background: var(--paper); color: var(--ink); }
   .sheet h1 { font-size: 44px; line-height: 1.1; font-weight: 500; letter-spacing: -0.015em; }
   .person, .agent { border-top: 1px solid var(--rule); padding: 12px 0; }
+  .tool-row { display: flex; flex-wrap: wrap; gap: 0 16px; margin: 4px 0 8px; }
+  .tool-row a { display: inline-flex; align-items: center; min-height: 44px; text-decoration: none; }
+  .tool-row a[aria-current="page"] { font-weight: 600; text-decoration: underline; }
+  .steps { margin: 8px 0 16px; padding: 0 0 0 1.4em; font-size: 17px; line-height: 1.5; }
+  .steps li { margin: 8px 0; }
+  .address { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 8px 0; }
+  .address code, .steps code { font-family: inherit; overflow-wrap: anywhere; }
+  h2.quiet { font-style: italic; font-weight: 400; color: var(--graphite); }
+  .sheet h1.return { overflow-wrap: anywhere; }
   .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
   .bar input { width: auto; flex: 1; min-width: 12rem; margin: 0; }
   pre { white-space: pre-wrap; font: inherit; font-size: 16px; line-height: 1.5; margin: 8px 0 16px; }
@@ -1117,6 +1126,20 @@ function signedInRedirect(request: Request, cookies: string[]): Response {
 	return redirectCookies(back, [...cookies, clearReturnCookie()]);
 }
 
+/**
+ * Access sends the person back here from another site. A redirect that sets a
+ * Strict cookie is not sent on the next request, so the page would redirect
+ * forever. A normal page sets the cookie, then continues.
+ * https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#samesitesamesite-value
+ */
+function continueAfterAccess(location: string, cookies: string[]): Response {
+	const headers = new Headers({ "Content-Type": "text/html; charset=utf-8" });
+	for (const cookie of cookies) headers.append("Set-Cookie", cookie);
+	const href = esc(location);
+	const body = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${href}"><title>Stylebook</title></head><body><p><a href="${href}">Continue</a></p></body></html>`;
+	return new Response(body, { status: 200, headers });
+}
+
 function redirectCookies(location: string, cookies: string[]): Response {
 	const headers = new Headers({ Location: location });
 	for (const cookie of cookies) headers.append("Set-Cookie", cookie);
@@ -1248,7 +1271,12 @@ async function enterFromAccess(request: Request, env: Env, runtime?: AccessRunti
 	const invites = await pendingInvitations(env.DB, email);
 	if (homes.length === 1 && invites.length === 0) {
 		const home = homes[0]!;
-		return signedInRedirect(request, [keyCookie(await openSession(env.DB, home.actor)), clearSeenCookie()]);
+		const back = safeReturnPath(readCookie(request, RETURN_COOKIE) ?? "") ?? "/";
+		return continueAfterAccess(back, [
+			keyCookie(await openSession(env.DB, home.actor)),
+			clearSeenCookie(),
+			clearReturnCookie(),
+		]);
 	}
 	if (homes.length > 0) {
 		const choice = await rememberLink(env, email, "choose");

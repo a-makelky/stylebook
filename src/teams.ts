@@ -324,28 +324,73 @@ export async function connectAgent(
 	return { actor, key };
 }
 
-/** An approved sign-in. The name comes from the tool. The same name reconnects. */
+async function currentKeyHash(db: D1Database, actorId: string): Promise<string | null> {
+	const row = await db
+		.prepare(`SELECT key_hash FROM actor_keys WHERE actor_id = ?1 ORDER BY created_at DESC LIMIT 1`)
+		.bind(actorId)
+		.first<{ key_hash: string }>();
+	return row?.key_hash ?? null;
+}
+
+async function unusedAgentName(db: D1Database, workspaceId: string, base: string): Promise<string> {
+	const taken = new Set(
+		(await listActors(db, workspaceId)).filter((agent) => agent.kind === "agent").map((agent) => agent.name),
+	);
+	if (!taken.has(base)) return base;
+	for (let number = 2; number < 100; number++) {
+		const suffix = ` (${number})`;
+		const name = `${base.slice(0, 80 - suffix.length)}${suffix}`;
+		if (!taken.has(name)) return name;
+	}
+	return base.slice(0, 80);
+}
+
+/**
+ * An approved sign-in. The same OAuth client reconnects to its own agent and
+ * keeps the key it already has. A different client gets a new agent. A key
+ * made by hand is never replaced.
+ */
 export async function connectSignedInAgent(
 	env: Env,
 	owner: Actor,
 	toolRaw: string,
+	clientId: string,
 ): Promise<{ actor: Actor; keyHash: string } | { message: string }> {
 	if (owner.kind !== "person" || owner.removedAt) return { message: "Sign in to connect a tool." };
+	const client = clientId.trim();
+	if (!client || client.length > 2000 || /[\r\n]/.test(client)) return { message: "This app could not be verified." };
 	const tool = toolLabel(toolRaw).slice(0, 40);
-	const name = `${tool} for ${owner.name}`.replace(/[\r\n]+/g, " ").trim().slice(0, 80);
 	const decision = await authorize(env, owner, "connect-agent");
 	if (!decision.ok) return { message: decision.sentence };
-	const existing = (await listActors(env.DB, owner.workspaceId)).find(
-		(agent) => agent.kind === "agent" && agent.ownerId === owner.id && agent.name === name,
-	);
-	if (existing) {
-		const fresh = await freshAgentKey(env, owner, existing.id);
-		if ("message" in fresh) return fresh;
-		return { actor: existing, keyHash: await hashKey(fresh.key) };
+	const mapped = await env.DB.prepare(
+		`SELECT agent_id FROM oauth_agents WHERE client_id = ?1 AND owner_id = ?2 AND workspace_id = ?3`,
+	)
+		.bind(client, owner.id, owner.workspaceId)
+		.first<{ agent_id: string }>();
+	if (mapped) {
+		const agent = await actorById(env.DB, mapped.agent_id);
+		if (
+			agent &&
+			!agent.removedAt &&
+			agent.kind === "agent" &&
+			agent.ownerId === owner.id &&
+			agent.workspaceId === owner.workspaceId
+		) {
+			const existingHash = await currentKeyHash(env.DB, agent.id);
+			if (existingHash) return { actor: agent, keyHash: existingHash };
+			const key = newKey();
+			const keyHash = await hashKey(key);
+			await env.DB.prepare(`INSERT INTO actor_keys (key_hash, actor_id, created_at) VALUES (?1, ?2, ?3)`)
+				.bind(keyHash, agent.id, new Date().toISOString())
+				.run();
+			return { actor: agent, keyHash };
+		}
 	}
 	if ((await countMembers(env.DB, owner.workspaceId, "agent")) >= (await effectiveLimits(env, owner.workspaceId)).agents) {
 		return { message: LIMIT_MESSAGE.agents };
 	}
+	const base = `${tool} for ${owner.name}`.replace(/[\r\n]+/g, " ").trim().slice(0, 80);
+	const name = await unusedAgentName(env.DB, owner.workspaceId, base);
 	const key = newKey();
 	const actor = await registerActor(env.DB, {
 		id: newActorId("agent"),
@@ -356,6 +401,12 @@ export async function connectSignedInAgent(
 		model: tool,
 		key,
 	});
+	await env.DB.prepare(
+		`INSERT INTO oauth_agents (client_id, owner_id, workspace_id, agent_id) VALUES (?1, ?2, ?3, ?4)
+     ON CONFLICT(client_id, owner_id, workspace_id) DO UPDATE SET agent_id = excluded.agent_id`,
+	)
+		.bind(client, owner.id, owner.workspaceId, actor.id)
+		.run();
 	return { actor, keyHash: await hashKey(key) };
 }
 
