@@ -52,6 +52,13 @@ Code, comments and this file may use the Git words. Users never see them.
 - `src/swarm.ts` — start many sessions at once and collect what came back
 - `src/workflows.ts` — the session Workflow, and the Workflow that records a push
 - `src/arrivals.ts` — the push event turned into one arrival row
+- `src/backup.ts` — download a workspace and start a new one from that download
+- `src/backups-page.ts` — the Backups page
+- `src/mirror.ts` — send a library to a backup, only to the stylebook ref
+- `src/backup-store.ts` — audit rows and the saved backup link
+- `src/backup-crypto.ts` — encrypt a backup secret with a Worker secret
+- `src/github-app.ts` — GitHub App install, short-lived tokens, private repositories
+- `src/zip-pack.ts` — stored zip for the download and the restore
 - `test/` — local tests, a local Git server, and a stand-in for the binding
 - `docs/runs/` — run logs from live runs
 

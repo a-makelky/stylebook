@@ -27,6 +27,7 @@ This table is the honest state of the code, not a roadmap.
 | Workspaces, email sign-in, invites, and connecting an agent | Ran live on 2026-10-02. See [the run log](docs/runs/2026-10-02-teams.md). Email links stay in the code and are switched off. |
 | Sign in with Cloudflare Access, Admin and Member, People | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-access-roles.md). |
 | Suspension on suggestion writes, admin page, second workspace, People | Ran live on 2026-10-03. See [the run log](docs/runs/2026-10-03-tracer-8-review.md). |
+| Download, back up, and restore a workspace | Built and tested against a local stand-in. Not yet run on live Artifacts. See [the run log](docs/runs/2026-10-03-backups.md). |
 
 Run logs from live runs go in [`docs/runs/`](docs/runs/). Until one is there for a piece, treat that piece as unproven.
 
@@ -37,6 +38,7 @@ Stylebook is hosted at [stylebook.dev](https://stylebook.dev). A writer opens th
 1. Sign in. Stylebook asks Cloudflare Access for a one-time code to your email. A new address with no workspace can start one, or join from an invitation. The person who starts a workspace is an Admin. The older email-link sign-in is still in the project and switched off.
 2. From People, an Admin invites a colleague by email and picks Admin or Member. They join, with that role, the next time they sign in. Members suggest. An Admin publishes, unless Members can publish is on. The person who started the workspace cannot be removed or demoted.
 3. Connect an agent by giving it a name and picking the tool. The key is shown once, with a setup for Cursor or Claude Code and a setup for a folder on your computer. The agent's first suggestion then appears on the page. An agent can be renamed, and its key can be revoked.
+4. An Admin opens Backups to download the workspace, back it up to GitHub or another service, or start a new workspace from a download. Members see that an Admin can do this. GitHub backups are not set up on this server yet. A backup over 20 MB is refused, and the page says so.
 
 A workspace is one team. Its library, suggestions, people, agents and History stay inside it. Another workspace cannot see or change them.
 

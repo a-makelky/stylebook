@@ -36,6 +36,20 @@ function num(value: string | undefined, fallback: number): number {
 	return parsed;
 }
 
+export interface BackupLimits {
+	backupBytes: number;
+	uploadBytes: number;
+}
+
+const DEFAULT_BACKUP_BYTES = 20_000_000;
+
+export function backupLimits(env: { MAX_BACKUP_BYTES?: string; MAX_BACKUP_UPLOAD_BYTES?: string }): BackupLimits {
+	return {
+		backupBytes: num(env.MAX_BACKUP_BYTES, DEFAULT_BACKUP_BYTES),
+		uploadBytes: num(env.MAX_BACKUP_UPLOAD_BYTES, DEFAULT_BACKUP_BYTES),
+	};
+}
+
 export function limitsOf(env: Pick<Env, keyof LimitsAsEnv>): Limits {
 	return {
 		workspaces: num(env.MAX_WORKSPACES, DEFAULT_LIMITS.workspaces),

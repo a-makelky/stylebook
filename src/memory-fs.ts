@@ -206,6 +206,21 @@ export class MemoryFS {
 		return entry.target;
 	}
 
+	/** Every file under `root`, with paths relative to it. */
+	filesUnder(root: string): { path: string; data: Uint8Array }[] {
+		const base = this.normalize(root);
+		const prefix = base === "/" ? "/" : `${base}/`;
+		const files: { path: string; data: Uint8Array }[] = [];
+		for (const [path, entry] of this.entries) {
+			if (entry.kind !== "file" || !path.startsWith(prefix)) continue;
+			const relative = path.slice(prefix.length);
+			if (!relative) continue;
+			files.push({ path: relative, data: entry.data });
+		}
+		files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+		return files;
+	}
+
 	async symlink(target: string, path: string) {
 		const location = this.normalize(path);
 		if (this.entries.has(location)) throw fsError("EEXIST", path);
