@@ -1,7 +1,7 @@
 // The review screen. One page: the library, the open suggestions, and history.
 // Words on this page follow design/README.md.
 
-import { actorFromRequest, chooseCookie, clearChooseCookie, clearCookie, clearSeenCookie, keyCookie, readCookie, seenCookie, CHOOSE_COOKIE, SEEN_COOKIE, signOut } from "./auth";
+import { actorFromRequest, chooseCookie, clearChooseCookie, clearCookie, clearReturnCookie, clearSeenCookie, keyCookie, readCookie, RETURN_COOKIE, safeReturnPath, seenCookie, CHOOSE_COOKIE, SEEN_COOKIE, signOut } from "./auth";
 import { accessLogoutUrl, signInMode, verifiedEmail, type AccessRuntime } from "./identity";
 import { listActors } from "./actors";
 import { clientIp, issueSignInLink, normalizeEmail, peekLink, rememberLink, SENT, SIGN_IN_ACK, takeLink } from "./mail";
@@ -34,7 +34,7 @@ import { scopedEnv } from "./usage";
 import { libraryName } from "./workspace";
 import { describeError } from "./redact";
 import type { Env } from "./env";
-import { githubSetupMain, handleBackups, isBackupPath } from "./backups-page";
+import { githubReturnMain, githubSetupMain, handleBackups, isBackupPath } from "./backups-page";
 import { icon } from "./icons";
 import type { ProofLine } from "./diff";
 import {
@@ -46,11 +46,12 @@ import {
 	loadDesk,
 	publishSuggestion,
 	saveAgentSuggestion,
+	writtenBy,
 	type Desk,
 	type DeskSuggestion,
 } from "./review";
 
-function esc(value: string): string {
+export function esc(value: string): string {
 	return value
 		.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")
@@ -166,7 +167,7 @@ function suggestionCard(desk: Desk, suggestion: DeskSuggestion, selected: boolea
 			: "";
 	return `<article class="suggestion${selected ? " selected" : ""}">
     <a href="${href}">${icon("suggestion", true)} <span class="ring ${suggestion.combined ? "green" : selected ? "blue" : ""}">${suggestion.number}</span>
-      <span class="who">Written by ${esc(suggestion.writer)} for ${esc(suggestion.owner)}</span></a>
+      <span class="who">${esc(writtenBy(suggestion.writer, suggestion.owner))}</span></a>
     <p>${esc(suggestion.why)}</p>
     ${ways}
     <div class="actions">${publish}</div>
@@ -249,15 +250,15 @@ export function renderDesk(desk: Desk, suggestion: string | null): string {
 	});
 }
 
-function accountLine(workspaceName: string, admin = false): string {
+export function accountLine(workspaceName: string, admin = false): string {
 	// A div, not a paragraph: a form inside a paragraph is lifted out of it,
 	// which split the workspace name and Sign out onto opposite sides of the line.
 	const backups = admin ? `<a href="/backups">Backups</a>` : "";
-	return `<div class="account"><span>${esc(workspaceName)}</span><a href="/people">People</a>${backups}
+	return `<div class="account"><span>${esc(workspaceName)}</span><a href="/connect">Connect your tools</a><a href="/people">People</a>${backups}
     <form method="post" action="/sign-out"><button class="text" type="submit">Sign out</button></form></div>`;
 }
 
-function page(parts: { main: string; account?: string }): string {
+export function page(parts: { main: string; account?: string }): string {
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -356,6 +357,15 @@ function page(parts: { main: string; account?: string }): string {
   .sign-in input, .sheet input, .sheet select { min-height: 44px; margin: 8px 0 16px; padding: 8px 12px; border: 1px solid var(--ink); border-radius: 3px; background: var(--paper); color: var(--ink); }
   .sheet h1 { font-size: 44px; line-height: 1.1; font-weight: 500; letter-spacing: -0.015em; }
   .person, .agent { border-top: 1px solid var(--rule); padding: 12px 0; }
+  .tool-row { display: flex; flex-wrap: wrap; gap: 0 16px; margin: 4px 0 8px; }
+  .tool-row a { display: inline-flex; align-items: center; min-height: 44px; text-decoration: none; }
+  .tool-row a[aria-current="page"] { font-weight: 600; text-decoration: underline; }
+  .steps { margin: 8px 0 16px; padding: 0 0 0 1.4em; font-size: 17px; line-height: 1.5; }
+  .steps li { margin: 8px 0; }
+  .address { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 8px 0; }
+  .address code, .steps code { font-family: inherit; overflow-wrap: anywhere; }
+  h2.quiet { font-style: italic; font-weight: 400; color: var(--graphite); }
+  .sheet h1.return { overflow-wrap: anywhere; }
   .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
   .bar input { width: auto; flex: 1; min-width: 12rem; margin: 0; }
   pre { white-space: pre-wrap; font: inherit; font-size: 16px; line-height: 1.5; margin: 8px 0 16px; }
@@ -472,7 +482,7 @@ function setupMarkup(origin: string, workspaceId: string, key: string): string {
 	);
 	const folder = `git clone https://stylebook:${key}@${host}/git/${libraryName(workspaceId)}.git library`;
 	return `<h2>For Cursor or Claude Code</h2>
-    <p>Paste this where that tool keeps its connections. The key is in the header.</p>
+    <p>Paste this where that tool keeps its connections.</p>
     <pre data-setup>${esc(mcp)}</pre>
     <h2>For a folder on your computer</h2>
     <p>Paste this to read the library. Saving a suggestion uses the same key.</p>
@@ -633,18 +643,8 @@ function renderPeople(
       </form>
     </section>`
 		: "";
-	const connect = `<h2>Connect an agent</h2>
-      <form method="post" action="/agents">
-        <label for="agent-name">Name</label>
-        <input id="agent-name" name="name" required placeholder="Claude, working for me">
-        <label for="tool">Tool</label>
-        <select id="tool" name="tool">
-          <option value="cursor">Cursor</option>
-          <option value="claude">Claude Code</option>
-          <option value="other">Another tool</option>
-        </select>
-        <button class="primary" type="submit">Connect</button>
-      </form>`;
+	const connect = `<h2>Connect your AI tools</h2>
+      <p><a class="primary" href="/connect">Connect your AI tools</a></p>`;
 	return page({
 		account: accountLine(workspaceName, admin),
 		main: `<div class="sheet people">
@@ -794,6 +794,17 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 			});
 		}
 
+		// GitHub sends the browser here from another site. A SameSite=Strict
+		// session cookie is not included on that navigation, so this page only
+		// shows a button. The connection is finished by the POST, which is
+		// same-site and does send the cookie.
+		if (request.method === "GET" && path === "/backups/github/callback") {
+			return html(page({ main: githubReturnMain(url.searchParams) }), 200, {
+				"Referrer-Policy": "no-referrer",
+				"Cache-Control": "no-store",
+			});
+		}
+
 		if (link && signInMode(env) === "access") return html(renderAccessGate(), 404);
 
 		if (link && (request.method === "GET" || request.method === "POST")) {
@@ -810,7 +821,7 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 			if ("choose" in joined) {
 				return html(renderChoose(joined.choose.workspaces), 200, { "Set-Cookie": chooseCookie(joined.choose.secret) });
 			}
-			return redirectCookies("/", [keyCookie(joined.joined.secret), clearChooseCookie()]);
+			return signedInRedirect(request, [keyCookie(joined.joined.secret), clearChooseCookie()]);
 		}
 
 		if (request.method === "POST" && path === "/start" && signInMode(env) === "access") {
@@ -827,7 +838,7 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 				return html(renderArrived(started.message), 400);
 			}
 			await takeLink(env, readCookie(request, SEEN_COOKIE) ?? "");
-			return redirectCookies("/", [keyCookie(started.joined.secret), clearSeenCookie()]);
+			return signedInRedirect(request, [keyCookie(started.joined.secret), clearSeenCookie()]);
 		}
 
 		if (request.method === "POST" && path === "/start") {
@@ -870,7 +881,7 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 			if (!taken || taken.purpose !== "choose") return html(renderGate("That link has expired or was already used."), 400);
 			const joined = await chooseWorkspace(env, taken.email, workspaceId);
 			if ("message" in joined) return html(renderGate(joined.message), 400);
-			return redirectCookies("/", [keyCookie(joined.secret), clearChooseCookie()]);
+			return signedInRedirect(request, [keyCookie(joined.secret), clearChooseCookie()]);
 		}
 
 		if (request.method === "GET" && path === "/choose") {
@@ -918,7 +929,7 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 				return html(renderArrived(joined.message, inviteChoices(invites)), 400);
 			}
 			await takeLink(env, held.secret);
-			return redirectCookies("/", [keyCookie(joined.secret), clearSeenCookie(), clearChooseCookie()]);
+			return signedInRedirect(request, [keyCookie(joined.secret), clearSeenCookie(), clearChooseCookie()]);
 		}
 
 		const signed = await actorFromRequest(request, env);
@@ -1139,6 +1150,26 @@ export async function handleScreen(request: Request, env: Env, ctx?: ExecutionCo
 	return html(renderGate(null), 405);
 }
 
+function signedInRedirect(request: Request, cookies: string[]): Response {
+	const back = safeReturnPath(readCookie(request, RETURN_COOKIE) ?? "");
+	if (!back) return redirectCookies("/", cookies);
+	return redirectCookies(back, [...cookies, clearReturnCookie()]);
+}
+
+/**
+ * Access sends the person back here from another site. A redirect that sets a
+ * Strict cookie is not sent on the next request, so the page would redirect
+ * forever. A normal page sets the cookie, then continues.
+ * https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#samesitesamesite-value
+ */
+function continueAfterAccess(location: string, cookies: string[]): Response {
+	const headers = new Headers({ "Content-Type": "text/html; charset=utf-8" });
+	for (const cookie of cookies) headers.append("Set-Cookie", cookie);
+	const href = esc(location);
+	const body = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${href}"><title>Stylebook</title></head><body><p><a href="${href}">Continue</a></p></body></html>`;
+	return new Response(body, { status: 200, headers });
+}
+
 function redirectCookies(location: string, cookies: string[]): Response {
 	const headers = new Headers({ Location: location });
 	for (const cookie of cookies) headers.append("Set-Cookie", cookie);
@@ -1270,7 +1301,12 @@ async function enterFromAccess(request: Request, env: Env, runtime?: AccessRunti
 	const invites = await pendingInvitations(env.DB, email);
 	if (homes.length === 1 && invites.length === 0) {
 		const home = homes[0]!;
-		return redirectCookies("/", [keyCookie(await openSession(env.DB, home.actor)), clearSeenCookie()]);
+		const back = safeReturnPath(readCookie(request, RETURN_COOKIE) ?? "") ?? "/";
+		return continueAfterAccess(back, [
+			keyCookie(await openSession(env.DB, home.actor)),
+			clearSeenCookie(),
+			clearReturnCookie(),
+		]);
 	}
 	if (homes.length > 0) {
 		const choice = await rememberLink(env, email, "choose");

@@ -35,3 +35,8 @@ CREATE TABLE IF NOT EXISTS backup_states (
   actor_id TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+-- An installation belongs to one workspace. Disconnect removes the row.
+CREATE UNIQUE INDEX IF NOT EXISTS backup_mirrors_installation
+  ON backup_mirrors (github_installation_id)
+  WHERE github_installation_id IS NOT NULL;

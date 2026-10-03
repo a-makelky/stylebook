@@ -70,13 +70,17 @@ function no(sentence: string): PermitResult {
 export function permit(input: PermitInput): PermitResult {
 	const { actor, role, action, settings } = input;
 	if (actor.removedAt) return no("That person is not in this workspace.");
-	// Leaving with a copy does not change the workspace, so a read-only
-	// workspace can still be downloaded, backed up, and restored elsewhere.
-	if (action === "export" || action === "mirror" || action === "restore") {
+	// A download does not change the workspace, so a read-only workspace can
+	// still be downloaded. Mirror changes, sends, and restore cannot.
+	if (action === "export") {
 		if (actor.kind === "person" && role === "admin") return { ok: true };
 		return no("Only an Admin can download or back up this workspace.");
 	}
 	if (settings.suspended && action !== "read") return no("This workspace is read-only.");
+	if (action === "mirror" || action === "restore") {
+		if (actor.kind === "person" && role === "admin") return { ok: true };
+		return no("Only an Admin can download or back up this workspace.");
+	}
 
 	if (actor.kind === "agent") {
 		if (role !== "admin" && role !== "member") return no("That agent is not in this workspace.");

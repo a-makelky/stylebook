@@ -1,33 +1,12 @@
-// A stored (uncompressed) zip. The Worker has no zip library. Method 0 is
-// enough for a library of text, and any zip tool opens it.
-
-const LOCAL = 0x04034b50;
-const CENTRAL = 0x02014b50;
-const END = 0x06054b50;
-const UTF8 = 0x0800;
-
-export interface ZipEntry {
-	name: string;
-	data: Uint8Array;
-}
+// A zip of stored files, uncompressed. Workers can build this without a package.
 
 function crc32(data: Uint8Array): number {
 	let crc = 0xffffffff;
-	for (let i = 0; i < data.length; i++) {
-		crc ^= data[i]!;
-		for (let bit = 0; bit < 8; bit++) {
-			crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
-		}
+	for (const byte of data) {
+		crc ^= byte;
+		for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
 	}
 	return (crc ^ 0xffffffff) >>> 0;
-}
-
-function dosTime(date: Date): { time: number; day: number } {
-	const year = Math.max(date.getUTCFullYear(), 1980);
-	const time =
-		(date.getUTCHours() << 11) | (date.getUTCMinutes() << 5) | Math.floor(date.getUTCSeconds() / 2);
-	const day = ((year - 1980) << 9) | ((date.getUTCMonth() + 1) << 5) | date.getUTCDate();
-	return { time, day };
 }
 
 function u16(view: DataView, offset: number, value: number) {
@@ -38,78 +17,105 @@ function u32(view: DataView, offset: number, value: number) {
 	view.setUint32(offset, value, true);
 }
 
-function concat(parts: Uint8Array[]): Uint8Array {
-	const length = parts.reduce((total, part) => total + part.byteLength, 0);
-	const out = new Uint8Array(length);
-	let offset = 0;
-	for (const part of parts) {
-		out.set(part, offset);
-		offset += part.byteLength;
-	}
-	return out;
+/** Bit 11: the entry name is UTF-8. */
+const UTF8_NAME = 0x800;
+
+export const SKILL_ZIP_MAX_FILES = 200;
+export const SKILL_ZIP_MAX_BYTES = 8 * 1024 * 1024;
+
+/** A library path that can safely become a zip entry name. */
+export function zipEntryAllowed(name: string): boolean {
+	if (!name || name.length > 240) return false;
+	if (name.startsWith("/") || name.includes("\\") || name.includes("..")) return false;
+	const parts = name.split("/");
+	if (parts.some((part) => part === "" || part === "." || part === "..")) return false;
+	return true;
 }
 
-/** Pack files. Names are relative and use `/`. */
-export function zipStore(entries: ZipEntry[], now = new Date()): Uint8Array {
-	const stamp = dosTime(now);
+/** Drop unsafe names, then stop at the file count and the total size. */
+export function zipEntries(
+	files: { name: string; data: Uint8Array }[],
+	limits: { maxFiles: number; maxBytes: number } = {
+		maxFiles: SKILL_ZIP_MAX_FILES,
+		maxBytes: SKILL_ZIP_MAX_BYTES,
+	},
+): { name: string; data: Uint8Array }[] {
+	const kept: { name: string; data: Uint8Array }[] = [];
+	let total = 0;
+	for (const file of files) {
+		if (!zipEntryAllowed(file.name)) continue;
+		if (kept.length >= limits.maxFiles) break;
+		if (total + file.data.byteLength > limits.maxBytes) break;
+		kept.push(file);
+		total += file.data.byteLength;
+	}
+	return kept;
+}
+
+/** A zip archive. Names use forward slashes and are marked UTF-8. Nothing is compressed. */
+export function zipStore(files: { name: string; data: Uint8Array }[]): Uint8Array {
 	const encoder = new TextEncoder();
 	const locals: Uint8Array[] = [];
 	const centrals: Uint8Array[] = [];
 	let offset = 0;
-	for (const entry of entries) {
-		const name = encoder.encode(entry.name);
-		const crc = crc32(entry.data);
-		const local = new Uint8Array(30 + name.byteLength);
-		const view = new DataView(local.buffer);
-		u32(view, 0, LOCAL);
-		u16(view, 4, 20);
-		u16(view, 6, UTF8);
-		u16(view, 8, 0);
-		u16(view, 10, stamp.time);
-		u16(view, 12, stamp.day);
-		u32(view, 14, crc);
-		u32(view, 18, entry.data.byteLength);
-		u32(view, 22, entry.data.byteLength);
-		u16(view, 26, name.byteLength);
-		u16(view, 28, 0);
+	for (const file of files) {
+		const name = encoder.encode(file.name);
+		const crc = crc32(file.data);
+		const local = new Uint8Array(30 + name.length);
+		const localView = new DataView(local.buffer);
+		u32(localView, 0, 0x04034b50);
+		u16(localView, 4, 20);
+		u16(localView, 6, UTF8_NAME);
+		u16(localView, 8, 0);
+		u32(localView, 14, crc);
+		u32(localView, 18, file.data.length);
+		u32(localView, 22, file.data.length);
+		u16(localView, 26, name.length);
 		local.set(name, 30);
-		locals.push(local, entry.data);
+		locals.push(local, file.data);
 
-		const central = new Uint8Array(46 + name.byteLength);
+		const central = new Uint8Array(46 + name.length);
 		const centralView = new DataView(central.buffer);
-		u32(centralView, 0, CENTRAL);
+		u32(centralView, 0, 0x02014b50);
 		u16(centralView, 4, 20);
 		u16(centralView, 6, 20);
-		u16(centralView, 8, UTF8);
+		u16(centralView, 8, UTF8_NAME);
 		u16(centralView, 10, 0);
-		u16(centralView, 12, stamp.time);
-		u16(centralView, 14, stamp.day);
 		u32(centralView, 16, crc);
-		u32(centralView, 20, entry.data.byteLength);
-		u32(centralView, 24, entry.data.byteLength);
-		u16(centralView, 28, name.byteLength);
-		u16(centralView, 30, 0);
-		u16(centralView, 32, 0);
-		u16(centralView, 34, 0);
-		u16(centralView, 36, 0);
-		u32(centralView, 38, 0);
+		u32(centralView, 20, file.data.length);
+		u32(centralView, 24, file.data.length);
+		u16(centralView, 28, name.length);
 		u32(centralView, 42, offset);
 		central.set(name, 46);
 		centrals.push(central);
-		offset += local.byteLength + entry.data.byteLength;
+		offset += local.length + file.data.length;
 	}
-	const directory = concat(centrals);
+	const centralSize = centrals.reduce((sum, part) => sum + part.length, 0);
 	const end = new Uint8Array(22);
 	const endView = new DataView(end.buffer);
-	u32(endView, 0, END);
-	u16(endView, 4, 0);
-	u16(endView, 6, 0);
-	u16(endView, 8, entries.length);
-	u16(endView, 10, entries.length);
-	u32(endView, 12, directory.byteLength);
+	u32(endView, 0, 0x06054b50);
+	u16(endView, 8, files.length);
+	u16(endView, 10, files.length);
+	u32(endView, 12, centralSize);
 	u32(endView, 16, offset);
-	u16(endView, 20, 0);
-	return concat([...locals, directory, end]);
+	const total = offset + centralSize + end.length;
+	const out = new Uint8Array(total);
+	let cursor = 0;
+	for (const part of locals) {
+		out.set(part, cursor);
+		cursor += part.length;
+	}
+	for (const part of centrals) {
+		out.set(part, cursor);
+		cursor += part.length;
+	}
+	out.set(end, cursor);
+	return out;
+}
+
+export interface ZipEntry {
+	name: string;
+	data: Uint8Array;
 }
 
 export const NOT_A_BACKUP = "This is not a Stylebook backup.";
@@ -122,7 +128,7 @@ export class ZipError extends Error {
 	}
 }
 
-function safeName(name: string): boolean {
+function safeZipName(name: string): boolean {
 	if (!name || name.length > 300) return false;
 	if (name.startsWith("/") || name.includes("\\") || name.includes("\0")) return false;
 	const parts = name.split("/");
@@ -139,7 +145,7 @@ export function unzipStore(bytes: Uint8Array, maxBytes: number, maxEntries = 10_
 	let end = -1;
 	const scanFrom = Math.max(0, bytes.byteLength - 22 - 65535);
 	for (let offset = bytes.byteLength - 22; offset >= scanFrom; offset--) {
-		if (view.getUint32(offset, true) === END) {
+		if (view.getUint32(offset, true) === 0x06054b50) {
 			end = offset;
 			break;
 		}
@@ -156,7 +162,7 @@ export function unzipStore(bytes: Uint8Array, maxBytes: number, maxEntries = 10_
 	let total = 0;
 	const decoder = new TextDecoder();
 	for (let index = 0; index < count; index++) {
-		if (cursor + 46 > bytes.byteLength || view.getUint32(cursor, true) !== CENTRAL) {
+		if (cursor + 46 > bytes.byteLength || view.getUint32(cursor, true) !== 0x02014b50) {
 			throw new ZipError(NOT_A_BACKUP);
 		}
 		const method = view.getUint16(cursor + 10, true);
@@ -168,9 +174,9 @@ export function unzipStore(bytes: Uint8Array, maxBytes: number, maxEntries = 10_
 		const localOffset = view.getUint32(cursor + 42, true);
 		const name = decoder.decode(bytes.subarray(cursor + 46, cursor + 46 + nameLength));
 		cursor += 46 + nameLength + extra + comment;
-		if (!safeName(name) || name.endsWith("/")) continue;
+		if (!safeZipName(name) || name.endsWith("/")) continue;
 		if (method !== 0 || compressed !== size) throw new ZipError(NOT_A_BACKUP);
-		if (localOffset + 30 > bytes.byteLength || view.getUint32(localOffset, true) !== LOCAL) {
+		if (localOffset + 30 > bytes.byteLength || view.getUint32(localOffset, true) !== 0x04034b50) {
 			throw new ZipError(NOT_A_BACKUP);
 		}
 		const localName = view.getUint16(localOffset + 26, true);
@@ -178,12 +184,10 @@ export function unzipStore(bytes: Uint8Array, maxBytes: number, maxEntries = 10_
 		const start = localOffset + 30 + localName + localExtra;
 		const data = bytes.subarray(start, start + size);
 		if (start + size > bytes.byteLength) throw new ZipError(NOT_A_BACKUP);
-		if (crc32(data) !== view.getUint32(localOffset + 14, true)) {
-			throw new ZipError(NOT_A_BACKUP);
-		}
+		if (crc32(data) !== view.getUint32(localOffset + 14, true)) throw new ZipError(NOT_A_BACKUP);
 		total += size;
 		if (total > maxBytes) throw new ZipError(UPLOAD_TOO_BIG);
-		entries.push({ name, data });
+		entries.push({ name, data: data.slice() });
 	}
 	return entries;
 }

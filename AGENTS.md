@@ -30,6 +30,10 @@ Code, comments and this file may use the Git words. Users never see them.
 ## Layout
 
 - `src/index.ts` — routes and the demo-key check
+- `src/oauth.ts` — sign-in from a tool, on `/mcp`
+- `src/connect.ts` — the Connect page
+- `src/catalog.ts` — skills, workflows, and team connections read from the library
+- `src/zip.ts` — stored zip for a skill folder, a download, and a restore
 - `src/workspace.ts` — library and suggestion copies over the Artifacts binding
 - `src/teams.ts` — workspaces, sessions, invites, and agent keys
 - `src/mail.ts` — one-time sign-in links, kept and switched off
@@ -58,7 +62,8 @@ Code, comments and this file may use the Git words. Users never see them.
 - `src/backup-store.ts` — audit rows and the saved backup link
 - `src/backup-crypto.ts` — encrypt a backup secret with a Worker secret
 - `src/github-app.ts` — GitHub App install, short-lived tokens, private repositories
-- `src/zip-pack.ts` — stored zip for the download and the restore
+- `src/git-http.ts` — Git HTTP that does not follow a redirect or a proxy
+- `src/backup-git.ts` — which backup files a restore keeps, and the inflate budget
 - `test/` — local tests, a local Git server, and a stand-in for the binding
 - `docs/runs/` — run logs from live runs
 

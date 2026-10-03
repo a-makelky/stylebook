@@ -6,13 +6,14 @@
 // https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation
 
 import git from "isomorphic-git";
-import http from "isomorphic-git/http/web";
 import { openSecret } from "./backup-crypto";
 import { keptMirrors, markMirror, readMirror, type MirrorKind, type MirrorRow } from "./backup-store";
 import type { Env } from "./env";
 import { NOTES_REF, tokenSecret } from "./git";
-import { githubInstallationToken, GITHUB_NOT_READY, githubReady } from "./github-app";
+import { backupHttp as http, NO_CORS_PROXY } from "./git-http";
+import { githubFullName, githubInstallationToken, GITHUB_NOT_READY, githubReady } from "./github-app";
 import { MemoryFS } from "./memory-fs";
+import { workspaceState } from "./roles";
 import { getRepo, libraryName } from "./workspace";
 
 export type { MirrorKind };
@@ -61,6 +62,7 @@ export async function cloneHistory(
 		url: remote,
 		ref,
 		singleBranch: true,
+		corsProxy: NO_CORS_PROXY,
 		onAuth,
 		headers: headers(),
 	});
@@ -68,6 +70,7 @@ export async function cloneHistory(
 		const listed = await git.listServerRefs({
 			http,
 			url: remote,
+			corsProxy: NO_CORS_PROXY,
 			onAuth,
 			headers: headers(),
 			protocolVersion: 1,
@@ -80,6 +83,7 @@ export async function cloneHistory(
 			http,
 			dir: WORK,
 			url: remote,
+			corsProxy: NO_CORS_PROXY,
 			remoteRef: NOTES_REF,
 			singleBranch: true,
 			onAuth,
@@ -101,6 +105,7 @@ async function remoteTip(
 		const listed = await git.listServerRefs({
 			http,
 			url: remote,
+			corsProxy: NO_CORS_PROXY,
 			onAuth,
 			headers: headers(),
 			protocolVersion: 1,
@@ -147,6 +152,7 @@ async function pushRef(fs: MemoryFS, input: DeliverInput, local: string, remoteR
 		http,
 		dir: WORK,
 		url: input.destRemote,
+		corsProxy: NO_CORS_PROXY,
 		ref: local,
 		remoteRef,
 		onAuth: auth(input.destUsername, input.destSecret),
@@ -241,7 +247,8 @@ async function credentials(
 	if (mirror.kind !== "github") return { sentence: "Save a secret for this backup first." };
 	if (!githubReady(env)) return { sentence: GITHUB_NOT_READY };
 	if (!mirror.installationId) return { sentence: "Connect GitHub first." };
-	const token = await githubInstallationToken(env, mirror.installationId);
+	const repository = githubFullName(mirror.address)?.split("/")[1];
+	const token = await githubInstallationToken(env, mirror.installationId, repository);
 	if (!token) return { sentence: "GitHub could not be reached. Try again." };
 	return { secret: token, username: "x-access-token" };
 }
@@ -289,6 +296,8 @@ export async function mirrorKeptLibraries(env: Env, repoName: string, refName: s
 	const match = /^([a-z][a-z0-9]{2,15})-library$/.exec(repoName);
 	if (!match || refName !== "refs/heads/main") return;
 	const workspaceId = match[1]!;
+	const state = await workspaceState(env.DB, workspaceId);
+	if (!state || state.suspended) return;
 	const mirrors = await keptMirrors(env.DB, workspaceId);
 	for (const mirror of mirrors) {
 		await runMirror(env, workspaceId, mirror.kind);

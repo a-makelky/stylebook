@@ -15,6 +15,7 @@ export interface Limits {
 	signInEmailsPerHour: number;
 	signInEmailsPerIpPerHour: number;
 	signInEmailsGlobalPerHour: number;
+	oauthRegistrationsPerIpPerHour: number;
 }
 
 export const DEFAULT_LIMITS: Limits = {
@@ -27,6 +28,7 @@ export const DEFAULT_LIMITS: Limits = {
 	signInEmailsPerHour: 5,
 	signInEmailsPerIpPerHour: 20,
 	signInEmailsGlobalPerHour: 100,
+	oauthRegistrationsPerIpPerHour: 30,
 };
 
 function num(value: string | undefined, fallback: number): number {
@@ -39,14 +41,21 @@ function num(value: string | undefined, fallback: number): number {
 export interface BackupLimits {
 	backupBytes: number;
 	uploadBytes: number;
+	inflatedBytes: number;
 }
 
 const DEFAULT_BACKUP_BYTES = 20_000_000;
+const DEFAULT_INFLATED_BYTES = 80_000_000;
 
-export function backupLimits(env: { MAX_BACKUP_BYTES?: string; MAX_BACKUP_UPLOAD_BYTES?: string }): BackupLimits {
+export function backupLimits(env: {
+	MAX_BACKUP_BYTES?: string;
+	MAX_BACKUP_UPLOAD_BYTES?: string;
+	MAX_BACKUP_INFLATED_BYTES?: string;
+}): BackupLimits {
 	return {
 		backupBytes: num(env.MAX_BACKUP_BYTES, DEFAULT_BACKUP_BYTES),
 		uploadBytes: num(env.MAX_BACKUP_UPLOAD_BYTES, DEFAULT_BACKUP_BYTES),
+		inflatedBytes: num(env.MAX_BACKUP_INFLATED_BYTES, DEFAULT_INFLATED_BYTES),
 	};
 }
 
@@ -61,6 +70,10 @@ export function limitsOf(env: Pick<Env, keyof LimitsAsEnv>): Limits {
 		signInEmailsPerHour: num(env.MAX_SIGN_IN_EMAILS_PER_HOUR, DEFAULT_LIMITS.signInEmailsPerHour),
 		signInEmailsPerIpPerHour: num(env.MAX_SIGN_IN_EMAILS_PER_IP_PER_HOUR, DEFAULT_LIMITS.signInEmailsPerIpPerHour),
 		signInEmailsGlobalPerHour: num(env.MAX_SIGN_IN_EMAILS_GLOBAL_PER_HOUR, DEFAULT_LIMITS.signInEmailsGlobalPerHour),
+		oauthRegistrationsPerIpPerHour: num(
+			env.MAX_OAUTH_REGISTRATIONS_PER_IP_PER_HOUR,
+			DEFAULT_LIMITS.oauthRegistrationsPerIpPerHour,
+		),
 	};
 }
 
@@ -74,6 +87,7 @@ type LimitsAsEnv = {
 	MAX_SIGN_IN_EMAILS_PER_HOUR?: string;
 	MAX_SIGN_IN_EMAILS_PER_IP_PER_HOUR?: string;
 	MAX_SIGN_IN_EMAILS_GLOBAL_PER_HOUR?: string;
+	MAX_OAUTH_REGISTRATIONS_PER_IP_PER_HOUR?: string;
 };
 
 export const LIMIT_MESSAGE = {

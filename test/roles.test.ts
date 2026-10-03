@@ -383,10 +383,11 @@ describe("roles on the screen, the Git route, and MCP", () => {
 		expect(memberHome).not.toContain("Change role");
 		expect(memberHome).not.toContain(">Invite<");
 		expect(memberHome).not.toContain("Members can publish");
-		expect(memberHome).toContain("Connect an agent");
+		expect(memberHome).toContain("Connect your AI tools");
 
 		const again = await enter(STARTER);
-		expect(again.status).toBe(303);
+		expect(again.status).toBe(200);
+		expect(await again.text()).toContain('http-equiv="refresh"');
 		expect(cookie(again, "stylebook").startsWith("stylebook=")).toBe(true);
 
 		const signedOut = await form("/sign-out", "", starterCookie);
@@ -463,7 +464,9 @@ describe("roles on the screen, the Git route, and MCP", () => {
 
 	it("lets a member join a second workspace and switch between both", async () => {
 		const straight = await enter(MEMBER);
-		expect(straight.status).toBe(303);
+		expect(straight.status).toBe(200);
+		expect(await straight.text()).toContain('http-equiv="refresh"');
+		expect(cookie(straight, "stylebook").startsWith("stylebook=")).toBe(true);
 		const host = "east.host@stylebook.invalid";
 		const arrived = await enter(host);
 		const seen = cookie(arrived, "stylebook_seen");

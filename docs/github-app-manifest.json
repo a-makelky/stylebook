@@ -6,7 +6,7 @@
   "callback_urls": ["https://stylebook.dev/backups/github/callback"],
   "setup_url": "https://stylebook.dev/backups/github/callback",
   "setup_on_update": true,
-  "request_oauth_on_install": false,
+  "request_oauth_on_install": true,
   "default_permissions": {
     "contents": "write"
   },

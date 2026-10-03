@@ -4,6 +4,9 @@
 // https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app
 // https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation
 // https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app
+// https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest
+// https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app
+// https://docs.github.com/en/rest/apps/installations#list-app-installations-accessible-to-the-user-access-token
 // Contents: Read and write is the only repository permission the manifest asks
 // for. That is what Git access needs. It does not include administration, so
 // creating a repository is offered only when an installation actually has it.
@@ -14,9 +17,16 @@ export const GITHUB_NOT_READY = "GitHub backups are not set up on this server ye
 
 const GITHUB_API = "https://api.github.com";
 const ACCEPT = "application/vnd.github+json";
+const API_VERSION = "2026-03-10";
 
 export function githubReady(env: Env): boolean {
-	return Boolean(env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY && env.GITHUB_APP_SLUG);
+	return Boolean(
+		env.GITHUB_APP_ID &&
+			env.GITHUB_APP_PRIVATE_KEY &&
+			env.GITHUB_APP_SLUG &&
+			env.GITHUB_APP_CLIENT_ID &&
+			env.GITHUB_APP_CLIENT_SECRET,
+	);
 }
 
 /** Creating a repository needs Administration: Read and write. Contents does not. */
@@ -137,8 +147,29 @@ function apiHeaders(bearer: string): Headers {
 		Authorization: `Bearer ${bearer}`,
 		Accept: ACCEPT,
 		"User-Agent": "stylebook",
-		"X-GitHub-Api-Version": "2022-11-28",
+		"X-GitHub-Api-Version": API_VERSION,
 	});
+}
+
+/** A redirect is a failure. The request is not sent to the Location. */
+async function githubFetch(url: string, init: RequestInit = {}): Promise<Response | null> {
+	const response = await fetch(url, { ...init, redirect: "manual" });
+	if (response.status >= 300 && response.status < 400) return null;
+	return response;
+}
+
+/** Body for an installation token: contents write, and one repository when known.
+ * https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app
+ */
+export function installationTokenBody(repository?: string): {
+	permissions: { contents: "write" };
+	repositories?: string[];
+} {
+	const body: { permissions: { contents: "write" }; repositories?: string[] } = {
+		permissions: { contents: "write" },
+	};
+	if (repository) body.repositories = [repository];
+	return body;
 }
 
 export interface GithubRepoChoice {
@@ -165,10 +196,10 @@ async function appToken(env: Env): Promise<string | null> {
 export async function githubInstallation(env: Env, installationId: string): Promise<GithubInstallation | null> {
 	const jwt = await appToken(env);
 	if (!jwt) return null;
-	const response = await fetch(`${GITHUB_API}/app/installations/${encodeURIComponent(installationId)}`, {
+	const response = await githubFetch(`${GITHUB_API}/app/installations/${encodeURIComponent(installationId)}`, {
 		headers: apiHeaders(jwt),
 	});
-	if (!response.ok) return null;
+	if (!response?.ok) return null;
 	const body = (await response.json()) as {
 		account?: { login?: string; type?: string };
 		permissions?: { administration?: string; contents?: string };
@@ -183,23 +214,81 @@ export async function githubInstallation(env: Env, installationId: string): Prom
 }
 
 /** An installation token lives for one hour and is not stored. */
-export async function githubInstallationToken(env: Env, installationId: string): Promise<string | null> {
+export async function githubInstallationToken(
+	env: Env,
+	installationId: string,
+	repository?: string,
+): Promise<string | null> {
 	const jwt = await appToken(env);
 	if (!jwt) return null;
-	const response = await fetch(
+	const response = await githubFetch(
 		`${GITHUB_API}/app/installations/${encodeURIComponent(installationId)}/access_tokens`,
-		{ method: "POST", headers: apiHeaders(jwt) },
+		{
+			method: "POST",
+			headers: apiHeaders(jwt),
+			body: JSON.stringify(installationTokenBody(repository)),
+		},
 	);
-	if (!response.ok) return null;
+	if (!response?.ok) return null;
 	const body = (await response.json()) as { token?: string };
 	return body.token || null;
 }
 
+/**
+ * Exchange the code from "Request user authorization (OAuth) during installation"
+ * for a user access token. The token is not stored.
+ * https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app
+ */
+export async function githubUserToken(env: Env, code: string): Promise<string | null> {
+	if (!env.GITHUB_APP_CLIENT_ID || !env.GITHUB_APP_CLIENT_SECRET) return null;
+	const response = await githubFetch("https://github.com/login/oauth/access_token", {
+		method: "POST",
+		headers: { Accept: "application/json", "Content-Type": "application/json", "User-Agent": "stylebook" },
+		body: JSON.stringify({
+			client_id: env.GITHUB_APP_CLIENT_ID,
+			client_secret: env.GITHUB_APP_CLIENT_SECRET,
+			code,
+		}),
+	});
+	if (!response?.ok) return null;
+	const body = (await response.json()) as { access_token?: string };
+	return body.access_token || null;
+}
+
+/**
+ * Installation ids the authorizing user can access.
+ * https://docs.github.com/en/rest/apps/installations#list-app-installations-accessible-to-the-user-access-token
+ */
+export async function githubUserInstallationIds(token: string): Promise<string[] | null> {
+	const ids: string[] = [];
+	for (let page = 1; page <= 5; page++) {
+		const response = await githubFetch(`${GITHUB_API}/user/installations?per_page=100&page=${page}`, {
+			headers: apiHeaders(token),
+		});
+		if (!response?.ok) return null;
+		const body = (await response.json()) as { installations?: { id?: number }[] };
+		const batch = body.installations ?? [];
+		for (const item of batch) {
+			if (typeof item.id === "number") ids.push(String(item.id));
+		}
+		if (batch.length < 100) break;
+	}
+	return ids;
+}
+
+/** The installation id has to be one GitHub listed for this user's code. */
+export async function githubUserCanUseInstallation(env: Env, code: string, installationId: string): Promise<boolean> {
+	const token = await githubUserToken(env, code);
+	if (!token) return false;
+	const ids = await githubUserInstallationIds(token);
+	return Boolean(ids?.includes(installationId));
+}
+
 export async function githubRepositories(token: string): Promise<GithubRepoChoice[] | null> {
-	const response = await fetch(`${GITHUB_API}/installation/repositories?per_page=100`, {
+	const response = await githubFetch(`${GITHUB_API}/installation/repositories?per_page=100`, {
 		headers: apiHeaders(token),
 	});
-	if (!response.ok) return null;
+	if (!response?.ok) return null;
 	const body = (await response.json()) as {
 		repositories?: { full_name?: string; private?: boolean; size?: number }[];
 	};
@@ -228,12 +317,12 @@ export async function githubCreatePrivate(
 		accountType === "Organization"
 			? `${GITHUB_API}/orgs/${encodeURIComponent(account)}/repos`
 			: `${GITHUB_API}/user/repos`;
-	const response = await fetch(path, {
+	const response = await githubFetch(path, {
 		method: "POST",
 		headers: apiHeaders(token),
 		body: JSON.stringify(body),
 	});
-	if (!response.ok) return { sentence: "GitHub could not create that. Create a private repository and pick it here." };
+	if (!response?.ok) return { sentence: "GitHub could not create that. Create a private repository and pick it here." };
 	const created = (await response.json()) as { full_name?: string; private?: boolean };
 	if (created.private !== true || !created.full_name) {
 		return { sentence: "Stylebook will not use a public repository." };

@@ -132,6 +132,18 @@ export async function markMirror(
 		.run();
 }
 
+/** The workspace that already uses this GitHub installation, if any. */
+export async function installationWorkspace(db: D1Database, installationId: string): Promise<string | null> {
+	const row = await db
+		.prepare(
+			`SELECT workspace_id FROM backup_mirrors
+       WHERE kind = 'github' AND github_installation_id = ?1`,
+		)
+		.bind(installationId)
+		.first<{ workspace_id: string }>();
+	return row?.workspace_id ?? null;
+}
+
 export async function removeMirror(db: D1Database, workspaceId: string, kind: MirrorKind): Promise<void> {
 	await db.prepare(`DELETE FROM backup_mirrors WHERE workspace_id = ?1 AND kind = ?2`).bind(workspaceId, kind).run();
 }

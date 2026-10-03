@@ -400,8 +400,10 @@ describe("stock git through the route", () => {
 		const listed = await call("tools/list", {});
 		const tools = (await listed.json()) as { result: { tools: { name: string }[] } };
 		expect(tools.result.tools.map((tool) => tool.name).sort()).toEqual([
+			"get_skill",
 			"list_library",
 			"list_suggestions",
+			"list_team_connections",
 			"read_item",
 			"suggest_change",
 		]);

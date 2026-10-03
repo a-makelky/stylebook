@@ -1,22 +1,27 @@
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync, createVerify } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deflateSync } from "node:zlib";
 import type { WorkflowStep } from "cloudflare:workers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { EXPANDS_TOO_FAR, measureGitObjects } from "../src/backup-git";
 import { sealSecret, openSecret } from "../src/backup-crypto";
-import { BACKUP_ADMIN_LINE, BACKUP_POSTS, lastBackedUp } from "../src/backups-page";
-import { DOWNLOAD_TOO_BIG } from "../src/backup";
+import { BACKUP_ADMIN_LINE, BACKUP_POSTS, GITHUB_IN_USE, GITHUB_UNCONFIRMED, lastBackedUp } from "../src/backups-page";
+import { cleanBackupAddress, DOWNLOAD_TOO_BIG } from "../src/backup";
 import { saveMirror } from "../src/backup-store";
 import type { Env } from "../src/env";
 import { publishFile } from "../src/git";
-import { canCreateRepository, githubAppJwt, privateRepositoryBody } from "../src/github-app";
+import { backupHttp } from "../src/git-http";
+import { canCreateRepository, githubAppJwt, githubInstallationToken, privateRepositoryBody } from "../src/github-app";
 import { signAccessJwt } from "../src/identity";
 import { DIVERGED } from "../src/mirror";
 import { editionNote } from "../src/notes";
 import { permit, type Action } from "../src/permit";
-import { NOT_A_BACKUP, UPLOAD_TOO_BIG, unzipStore, zipStore } from "../src/zip-pack";
+import { NOT_A_BACKUP, UPLOAD_TOO_BIG, unzipStore, zipStore } from "../src/zip";
 import { ensureSuggestion, suggestionName, writeAccess } from "../src/workspace";
 import { ArrivalWorkflow } from "../src/workflows";
 import { FakeWorkspace } from "./fake-artifacts";
@@ -68,10 +73,12 @@ describe("backup rules", () => {
 		const agent = { ...admin, actor: { kind: "agent" as const, removedAt: null } };
 		for (const action of ["export", "mirror", "restore"] as Action[]) {
 			expect(permit({ ...admin, action }).ok).toBe(true);
-			expect(permit({ ...admin, action, settings: { ...off, suspended: true } }).ok).toBe(true);
 			expect(permit({ ...member, action }).ok).toBe(false);
 			expect(permit({ ...agent, action }).ok).toBe(false);
 		}
+		expect(permit({ ...admin, action: "export", settings: { ...off, suspended: true } }).ok).toBe(true);
+		expect(permit({ ...admin, action: "mirror", settings: { ...off, suspended: true } }).ok).toBe(false);
+		expect(permit({ ...admin, action: "restore", settings: { ...off, suspended: true } }).ok).toBe(false);
 	});
 
 	it("says when a backup last succeeded", () => {
@@ -96,6 +103,7 @@ describe("backup rules", () => {
 		expect(manifest.public).toBe(false);
 		expect(manifest.default_permissions).toEqual({ contents: "write" });
 		expect(manifest.redirect_url).toBe("https://stylebook.dev/backups/github/setup");
+		expect((manifest as { request_oauth_on_install?: boolean }).request_oauth_on_install).toBe(true);
 	});
 
 	it("signs a GitHub App token from a PKCS#1 key and a PKCS#8 key", async () => {
@@ -130,6 +138,123 @@ describe("backup rules", () => {
 		]);
 		expect(() => unzipStore(new Uint8Array([1, 2, 3]), 1000)).toThrow(NOT_A_BACKUP);
 		expect(() => unzipStore(packed, 2)).toThrow(UPLOAD_TOO_BIG);
+	});
+
+	it("accepts only an https address that is not one of ours", () => {
+		const page = "stylebook.dev";
+		expect(cleanBackupAddress("https://codeberg.org/northwind/library.git", page)).toBe(
+			"https://codeberg.org/northwind/library.git",
+		);
+		expect(cleanBackupAddress("http://gitlab.com/northwind/library.git", page)).toBeNull();
+		expect(cleanBackupAddress("https://127.0.0.1/library.git", page)).toBeNull();
+		expect(cleanBackupAddress("https://localhost/library.git", page)).toBeNull();
+		expect(cleanBackupAddress("https://10.1.2.3/library.git", page)).toBeNull();
+		expect(cleanBackupAddress("https://192.168.1.9/library.git", page)).toBeNull();
+		expect(cleanBackupAddress("https://172.16.0.4/library.git", page)).toBeNull();
+		expect(cleanBackupAddress("https://169.254.169.254/latest", page)).toBeNull();
+		expect(cleanBackupAddress("https://[::1]/library.git", page)).toBeNull();
+		expect(cleanBackupAddress("https://example.artifacts.cloudflare.net/library.git", page)).toBeNull();
+		expect(cleanBackupAddress("https://stylebook.dev/git/library.git", page)).toBeNull();
+		expect(cleanBackupAddress("https://stylebook.workers.dev/git/library.git", "stylebook.workers.dev")).toBeNull();
+		expect(cleanBackupAddress("https://user:secret@codeberg.org/northwind/library.git", page)).toBeNull();
+		expect(cleanBackupAddress("https://codeberg.org/northwind/library.git?next=1", page)).toBeNull();
+		expect(cleanBackupAddress("https://8.8.8.8/library.git", page)).toBeNull();
+	});
+
+	it("does not follow a redirect", async () => {
+		let hits = 0;
+		const target = createServer((_request, response) => {
+			hits += 1;
+			response.end("no");
+		});
+		await new Promise<void>((resolve) => target.listen(0, "127.0.0.1", resolve));
+		const targetPort = (target.address() as AddressInfo).port;
+		const source = createServer((_request, response) => {
+			response.writeHead(302, { Location: `http://127.0.0.1:${targetPort}/landed` });
+			response.end();
+		});
+		await new Promise<void>((resolve) => source.listen(0, "127.0.0.1", resolve));
+		const sourcePort = (source.address() as AddressInfo).port;
+		try {
+			const response = await backupHttp.request({
+				url: `http://127.0.0.1:${sourcePort}/info/refs`,
+				method: "GET",
+			});
+			expect(response.statusCode).toBe(302);
+			expect(hits).toBe(0);
+		} finally {
+			source.close();
+			target.close();
+		}
+	});
+
+	it("mints an installation token for one repository and contents write", async () => {
+		const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+		const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+		let body = "";
+		const real = globalThis.fetch;
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+			if (url.includes("/access_tokens")) {
+				body = String(init?.body ?? "");
+				return new Response(JSON.stringify({ token: "ghs_test" }), { status: 201 });
+			}
+			return real(input, init);
+		}) as typeof fetch;
+		try {
+			const token = await githubInstallationToken(
+				{ GITHUB_APP_ID: "4242", GITHUB_APP_PRIVATE_KEY: pem } as Env,
+				"99",
+				"library",
+			);
+			expect(token).toBe("ghs_test");
+			expect(JSON.parse(body)).toEqual({ permissions: { contents: "write" }, repositories: ["library"] });
+		} finally {
+			globalThis.fetch = real;
+		}
+	});
+
+	it("treats a redirect from GitHub as a failed token", async () => {
+		const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+		const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+		const real = globalThis.fetch;
+		globalThis.fetch = (async (input: RequestInfo | URL) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+			if (url.includes("/access_tokens")) {
+				return new Response(null, { status: 302, headers: { Location: "https://evil.example/token" } });
+			}
+			return real(input);
+		}) as typeof fetch;
+		try {
+			const token = await githubInstallationToken(
+				{ GITHUB_APP_ID: "4242", GITHUB_APP_PRIVATE_KEY: pem } as Env,
+				"99",
+				"library",
+			);
+			expect(token).toBeNull();
+		} finally {
+			globalThis.fetch = real;
+		}
+	});
+
+	it("stops when a pack declares an object larger than the budget", async () => {
+		const pack = new Uint8Array(80);
+		const view = new DataView(pack.buffer);
+		view.setUint32(0, 0x5041434b);
+		view.setUint32(4, 2);
+		view.setUint32(8, 1);
+		let size = 50_000_000;
+		const encoded = [0x80 | (3 << 4) | (size & 15)];
+		size = Math.floor(size / 16);
+		while (size > 0) {
+			const next = Math.floor(size / 128);
+			encoded.push((next > 0 ? 0x80 : 0) | (size & 0x7f));
+			size = next;
+		}
+		pack.set(encoded, 12);
+		await expect(
+			measureGitObjects([{ path: "objects/pack/pack-test.pack", data: pack }], 1000),
+		).rejects.toThrow(EXPANDS_TOO_FAR);
 	});
 });
 
@@ -487,13 +612,22 @@ describe("download, mirror, and restore", () => {
 		const mainBefore = ref(dir, "refs/heads/main");
 		expect(mainBefore).not.toBe("");
 		const address = `${mirror.url}/other.git`;
-		const saved = await form("/backups/other", `address=${encodeURIComponent(address)}&login=stylebook&secret=${MIRROR_SECRET}`, adminCookie);
+		const publicAddress = "https://codeberg.org/northwind/library.git";
+		const saved = await form(
+			"/backups/other",
+			`address=${encodeURIComponent(publicAddress)}&login=stylebook&secret=${MIRROR_SECRET}`,
+			adminCookie,
+		);
 		expect(saved.status).toBe(303);
 		const row = await db
 			.prepare(`SELECT token_cipher, address FROM backup_mirrors WHERE workspace_id = ?1 AND kind = 'other'`)
 			.bind(workspaceId)
 			.first<{ token_cipher: string; address: string }>();
-		expect(row?.address).toBe(address);
+		expect(row?.address).toBe(publicAddress);
+		await db
+			.prepare(`UPDATE backup_mirrors SET address = ?1 WHERE workspace_id = ?2 AND kind = 'other'`)
+			.bind(address, workspaceId)
+			.run();
 		expect(row?.token_cipher ?? "").not.toContain(MIRROR_SECRET);
 		expect(await openSecret(env.BACKUP_KEY ?? "", row?.token_cipher ?? "")).toBe(MIRROR_SECRET);
 
@@ -581,8 +715,16 @@ describe("download, mirror, and restore", () => {
 		);
 		expect(bare(dir, ["rev-list", "--count", "refs/heads/stylebook"]).trim()).toBe(countAfterDisconnect);
 
-		const again = await form("/backups/other", `address=${encodeURIComponent(address)}&login=stylebook&secret=${MIRROR_SECRET}`, adminCookie);
+		const again = await form(
+			"/backups/other",
+			`address=${encodeURIComponent(publicAddress)}&login=stylebook&secret=${MIRROR_SECRET}`,
+			adminCookie,
+		);
 		expect(again.status).toBe(303);
+		await db
+			.prepare(`UPDATE backup_mirrors SET address = ?1 WHERE workspace_id = ?2 AND kind = 'other'`)
+			.bind(address, workspaceId)
+			.run();
 		const work = mkdtempSync(join(tmpdir(), "stylebook-diverge-"));
 		git(work, ["clone", "--branch", "stylebook", dir, "."]);
 		git(work, ["config", "user.name", "Outside"]);
@@ -665,6 +807,218 @@ describe("download, mirror, and restore", () => {
 			.first<{ id: string }>();
 		expect(still).toBeNull();
 	});
+
+	it("shows a same-site confirm page and refuses a forged GitHub installation", async () => {
+		const code = "oauth-code-ok";
+		const state = "ab".repeat(24);
+		const shown = await fetch(
+			`${origin}/backups/github/callback?code=${code}&installation_id=999&state=${state}`,
+		);
+		expect(shown.status).toBe(200);
+		expect(shown.headers.get("Referrer-Policy")).toBe("no-referrer");
+		expect(shown.headers.get("Cache-Control")).toBe("no-store");
+		const shownHtml = await shown.text();
+		expect(shownHtml).toContain("Finish connecting GitHub");
+		expect(shownHtml).toContain('method="post" action="/backups/github/callback"');
+		expect(bannedWords(shownHtml)).toEqual([]);
+		const unsigned = await form(
+			"/backups/github/callback",
+			`code=${code}&installation_id=999&state=${state}`,
+		);
+		expect(unsigned.status).not.toBe(303);
+
+		const { privateKey: appKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+		env.GITHUB_APP_ID = "4242";
+		env.GITHUB_APP_PRIVATE_KEY = appKey.export({ type: "pkcs8", format: "pem" }).toString();
+		env.GITHUB_APP_SLUG = "stylebook";
+		env.GITHUB_APP_CLIENT_ID = "Iv1.testclient";
+		env.GITHUB_APP_CLIENT_SECRET = "client-secret-for-tests";
+		const real = globalThis.fetch;
+		const listed = new Set<string>(["111"]);
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+			if (url.startsWith("https://github.com/") || url.startsWith("https://api.github.com/")) {
+				if (url.includes("/login/oauth/access_token")) {
+					return new Response(JSON.stringify({ access_token: "ghu_test" }), { status: 200 });
+				}
+				if (url.includes("/user/installations")) {
+					return new Response(
+						JSON.stringify({ installations: [...listed].map((id) => ({ id: Number(id) })) }),
+						{ status: 200 },
+					);
+				}
+				if (url.includes("/app/installations/")) {
+					return new Response(
+						JSON.stringify({ account: { login: "northwind", type: "User" }, permissions: { contents: "write" } }),
+						{ status: 200 },
+					);
+				}
+				return new Response("no", { status: 404 });
+			}
+			return real(input, init);
+		}) as typeof fetch;
+		try {
+			const started = await form("/backups/github/connect", "", adminCookie);
+			expect(started.status).toBe(303);
+			const liveState = new URL(started.headers.get("Location") ?? "", origin).searchParams.get("state") ?? "";
+			expect(liveState).toMatch(/^[0-9a-f]{48}$/);
+			const forged = await form(
+				"/backups/github/callback",
+				`code=${code}&installation_id=999&state=${liveState}`,
+				adminCookie,
+			);
+			expect(noticeOf(forged)).toBe(GITHUB_UNCONFIRMED);
+			const saved = await db
+				.prepare(`SELECT github_installation_id FROM backup_mirrors WHERE workspace_id = ?1 AND kind = 'github'`)
+				.bind(workspaceId)
+				.first<{ github_installation_id: string | null }>();
+			expect(saved?.github_installation_id ?? null).toBeNull();
+
+			const again = await form("/backups/github/connect", "", adminCookie);
+			const confirmedState = new URL(again.headers.get("Location") ?? "", origin).searchParams.get("state") ?? "";
+			const confirmed = await form(
+				"/backups/github/callback",
+				`code=${code}&installation_id=111&state=${confirmedState}`,
+				adminCookie,
+			);
+			expect(noticeOf(confirmed)).toBe("Connected GitHub. Pick an empty repository.");
+			await db
+				.prepare(`UPDATE backup_mirrors SET workspace_id = 'other-ws' WHERE workspace_id = ?1 AND kind = 'github'`)
+				.bind(workspaceId)
+				.run();
+			const third = await form("/backups/github/connect", "", adminCookie);
+			const thirdState = new URL(third.headers.get("Location") ?? "", origin).searchParams.get("state") ?? "";
+			const reused = await form(
+				"/backups/github/callback",
+				`code=${code}&installation_id=111&state=${thirdState}`,
+				adminCookie,
+			);
+			expect(noticeOf(reused)).toBe(GITHUB_IN_USE);
+			const owner = await db
+				.prepare(`SELECT workspace_id FROM backup_mirrors WHERE github_installation_id = '111'`)
+				.bind()
+				.first<{ workspace_id: string }>();
+			expect(owner?.workspace_id).toBe("other-ws");
+		} finally {
+			globalThis.fetch = real;
+			delete env.GITHUB_APP_ID;
+			delete env.GITHUB_APP_PRIVATE_KEY;
+			delete env.GITHUB_APP_SLUG;
+			delete env.GITHUB_APP_CLIENT_ID;
+			delete env.GITHUB_APP_CLIENT_SECRET;
+			await db.prepare(`DELETE FROM backup_mirrors WHERE github_installation_id = '111'`).bind().run();
+			await db.prepare(`DELETE FROM backup_mirrors WHERE workspace_id = ?1 AND kind = 'github'`).bind(workspaceId).run();
+		}
+	});
+
+	it("ignores a proxy set in an uploaded backup", async () => {
+		const downloaded = await form("/backups/download", "", adminCookie);
+		const entries = unzipStore(new Uint8Array(await downloaded.arrayBuffer()), 20_000_000);
+		const config = entries.find((entry) => entry.name.endsWith("/.git/config"));
+		expect(config).toBeTruthy();
+		config!.data = new TextEncoder().encode(
+			"[core]\n\trepositoryformatversion = 0\n[http]\n\tcorsProxy = https://evil.example\n",
+		);
+		const packed = zipStore(entries);
+		const seen: string[] = [];
+		const real = globalThis.fetch;
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+			seen.push(url);
+			return real(input, init);
+		}) as typeof fetch;
+		try {
+			const data = new FormData();
+			data.set("name", "Copied library");
+			data.set("file", new Blob([packed], { type: "application/zip" }), "Northwind.zip");
+			const restored = await fetch(`${origin}/backups/restore`, {
+				method: "POST",
+				redirect: "manual",
+				headers: { Cookie: adminCookie },
+				body: data,
+			});
+			expect(restored.status).toBe(303);
+			expect(noticeOf(restored)).toContain("started from the backup");
+			expect(seen.some((url) => url.includes("evil.example"))).toBe(false);
+			const created = await db
+				.prepare(`SELECT id FROM workspaces WHERE name = ?1 AND deleted_at IS NULL`)
+				.bind("Copied library")
+				.first<{ id: string }>();
+			const restoredLibrary = `${created?.id ?? ""}-library`;
+			let proxy = "";
+			try {
+				proxy = workspace.git(restoredLibrary, "config", "--get", "http.corsProxy").trim();
+			} catch {
+				proxy = "";
+			}
+			expect(proxy).toBe("");
+			expect(workspace.git(restoredLibrary, "rev-list", "--count", "refs/heads/main").trim()).toBe(
+				workspace.git(library, "rev-list", "--count", "refs/heads/main").trim(),
+			);
+		} finally {
+			globalThis.fetch = real;
+		}
+	}, 60_000);
+
+	it("refuses a small backup that inflates past the budget", async () => {
+		const bomb = deflateSync(Buffer.alloc(80_000));
+		const text = new TextEncoder();
+		const packed = zipStore([
+			{ name: "Northwind/ABOUT-THIS-BACKUP.md", data: text.encode("Stylebook backup\n") },
+			{ name: "Northwind/skills/draft/SKILL.md", data: text.encode("# Draft\n") },
+			{ name: "Northwind/.git/HEAD", data: text.encode("ref: refs/heads/main\n") },
+			{
+				name: "Northwind/.git/objects/ab/cdef0123456789abcdef0123456789abcdef01",
+				data: bomb,
+			},
+		]);
+		expect(packed.byteLength).toBeLessThan(5_000);
+		env.MAX_BACKUP_INFLATED_BYTES = "1000";
+		try {
+			const data = new FormData();
+			data.set("name", "Too large inside");
+			data.set("file", new Blob([packed], { type: "application/zip" }), "bomb.zip");
+			const restored = await fetch(`${origin}/backups/restore`, {
+				method: "POST",
+				redirect: "manual",
+				headers: { Cookie: adminCookie },
+				body: data,
+			});
+			expect(noticeOf(restored)).toBe(EXPANDS_TOO_FAR);
+			const created = await db
+				.prepare(`SELECT id FROM workspaces WHERE name = ?1`)
+				.bind("Too large inside")
+				.first<{ id: string }>();
+			expect(created).toBeNull();
+		} finally {
+			delete env.MAX_BACKUP_INFLATED_BYTES;
+		}
+	});
+
+	it("lets a read-only workspace be downloaded and blocks backup changes", async () => {
+		await db.prepare(`UPDATE workspaces SET suspended = 1 WHERE id = ?1`).bind(workspaceId).run();
+		try {
+			const page = await fetch(`${origin}/backups`, { headers: { Cookie: adminCookie } });
+			const html = await page.text();
+			expect(html).toContain('action="/backups/download"');
+			expect(html).toContain("This workspace is read-only.");
+			expect(html).not.toContain('action="/backups/other"');
+			expect(html).not.toContain('action="/backups/restore"');
+			expect(bannedWords(html)).toEqual([]);
+			const downloaded = await form("/backups/download", "", adminCookie);
+			expect(downloaded.status).toBe(200);
+			const changed = await form(
+				"/backups/other",
+				`address=${encodeURIComponent("https://codeberg.org/northwind/library.git")}&login=stylebook&secret=${MIRROR_SECRET}`,
+				adminCookie,
+			);
+			expect(noticeOf(changed)).toBe("This workspace is read-only.");
+			const restored = await form("/backups/restore", "name=Nope", adminCookie);
+			expect(noticeOf(restored)).toBe("This workspace is read-only.");
+		} finally {
+			await db.prepare(`UPDATE workspaces SET suspended = 0 WHERE id = ?1`).bind(workspaceId).run();
+		}
+	}, 60_000);
 
 	it("offers a download before a workspace is deleted", async () => {
 		const people = await fetch(`${origin}/people`, { headers: { Cookie: adminCookie } });

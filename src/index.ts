@@ -2,7 +2,9 @@ import { handleAccess } from "./access";
 import { handleAdmin } from "./admin";
 import { listActors, registerActor, actorByKey, type ActorInput } from "./actors";
 import { seedOpenSuggestions } from "./demo-seed";
+import { handleConnect } from "./connect";
 import { handleMcp } from "./mcp";
+import { handleAuthorize, oauthFetch } from "./oauth";
 import { actorFromRequest } from "./auth";
 import { auditSince, isUnseen } from "./audit";
 import { publishDirect } from "./bypass";
@@ -55,14 +57,31 @@ function checkDemoKey(request: Request, env: Env): Response | null {
 	return null;
 }
 
-export default {
-	async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+export async function appFetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
 
 		if (foreignPost(request)) return foreignPostResponse();
 
 		if (request.method === "GET" && url.pathname === "/health") {
 			return json({ ok: true, name: "stylebook" });
+		}
+
+		if (url.pathname === "/authorize") {
+			try {
+				return await handleAuthorize(request, env);
+			} catch (error) {
+				const failure = describeError(error);
+				return json(sanitize({ ok: false, error: failure.message, code: failure.code }), 500);
+			}
+		}
+
+		if (url.pathname === "/connect" || url.pathname.startsWith("/connect/")) {
+			try {
+				return await handleConnect(request, env);
+			} catch (error) {
+				const failure = describeError(error);
+				return json(sanitize({ ok: false, error: failure.message, code: failure.code }), 500);
+			}
 		}
 
 		if (url.pathname === "/mcp") {
@@ -302,5 +321,23 @@ export default {
 			},
 			404,
 		);
+}
+
+function requestContext(ctx?: ExecutionContext): ExecutionContext {
+	return (
+		ctx ??
+		({
+			waitUntil() {},
+			passThroughOnException() {},
+			props: {},
+		} as unknown as ExecutionContext)
+	);
+}
+
+export default {
+	async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+		const context = requestContext(ctx);
+		if (env.OAUTH_KV) return oauthFetch(request, env, context, appFetch);
+		return appFetch(request, env, context);
 	},
 } satisfies ExportedHandler<Env>;

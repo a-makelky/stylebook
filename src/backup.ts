@@ -5,6 +5,7 @@
 
 import git from "isomorphic-git";
 import { listActors, type Actor } from "./actors";
+import { BackupGitError, FRESH_GIT_CONFIG, keptGitRelative, measureGitObjects } from "./backup-git";
 import { backupLimits } from "./limits";
 import type { Env } from "./env";
 import { NOTES_REF } from "./git";
@@ -19,7 +20,7 @@ import {
 	releaseWorkspaceStart,
 	reserveWorkspaceStart,
 } from "./teams";
-import { NOT_A_BACKUP, UPLOAD_TOO_BIG, unzipStore, zipStore, ZipError, type ZipEntry } from "./zip-pack";
+import { NOT_A_BACKUP, UPLOAD_TOO_BIG, unzipStore, zipStore, ZipError, type ZipEntry } from "./zip";
 import {
 	deleteWorkspaceRepos,
 	ensureLibrary,
@@ -273,6 +274,7 @@ export async function downloadWorkspace(
 	const access = await repo.createToken("read", 300);
 	const info = await repo.info();
 	const source = await cloneHistory(info.remote, access.plaintext);
+	if (totalBytes(source.filesUnder(WORK)) > cap) return { sentence: DOWNLOAD_TOO_BIG };
 	const approverRows = await env.DB.prepare(
 		`SELECT edition_id, actor_name FROM gateway_pushes
      WHERE repo_name = ?1 AND ref_name = 'refs/heads/main'
@@ -313,8 +315,8 @@ export async function downloadWorkspace(
 		name: `${folder}/${file.path}`,
 		data: file.data,
 	}));
-	const zip = zipStore(entries, now);
-	if (zip.byteLength > cap) return { sentence: DOWNLOAD_TOO_BIG };
+	if (storedZipBytes(entries) > cap) return { sentence: DOWNLOAD_TOO_BIG };
+	const zip = zipStore(entries);
 	return {
 		zip,
 		filename: `${folder}.zip`,
@@ -323,29 +325,77 @@ export async function downloadWorkspace(
 	};
 }
 
-export async function loadBackup(bytes: Uint8Array, maxBytes: number): Promise<{ fs: MemoryFS } | { sentence: string }> {
-	if (bytes.byteLength > maxBytes) return { sentence: UPLOAD_TOO_BIG };
+function totalBytes(files: { data: Uint8Array }[]): number {
+	let total = 0;
+	for (const file of files) total += file.data.byteLength;
+	return total;
+}
+
+/** Stored-zip size, including the headers, before the archive is built. */
+function storedZipBytes(entries: { name: string; data: Uint8Array }[]): number {
+	const encoder = new TextEncoder();
+	let total = 22;
+	for (const entry of entries) {
+		const name = encoder.encode(entry.name).byteLength;
+		total += 76 + name * 2 + entry.data.byteLength;
+	}
+	return total;
+}
+
+function safeHead(data: Uint8Array): boolean {
+	const text = new TextDecoder().decode(data).trim();
+	return text === "ref: refs/heads/main" || /^[0-9a-f]{40}$/.test(text);
+}
+
+export async function loadBackup(
+	bytes: Uint8Array,
+	limits: { uploadBytes: number; inflatedBytes: number },
+): Promise<{ fs: MemoryFS } | { sentence: string }> {
+	if (bytes.byteLength > limits.uploadBytes) return { sentence: UPLOAD_TOO_BIG };
 	let entries: ZipEntry[];
 	try {
-		entries = unzipStore(bytes, maxBytes);
+		entries = unzipStore(bytes, limits.uploadBytes);
 	} catch (error) {
 		if (error instanceof ZipError) return { sentence: error.message };
 		return { sentence: NOT_A_BACKUP };
 	}
 	const head = entries.find((entry) => entry.name === ".git/HEAD" || entry.name.endsWith("/.git/HEAD"));
-	if (!head) return { sentence: NOT_A_BACKUP };
+	if (!head || !safeHead(head.data)) return { sentence: NOT_A_BACKUP };
 	const root = head.name.slice(0, head.name.length - ".git/HEAD".length);
 	const about = entries.find((entry) => entry.name === `${root}ABOUT-THIS-BACKUP.md`);
 	if (!about || !new TextDecoder().decode(about.data).includes("Stylebook backup")) {
 		return { sentence: NOT_A_BACKUP };
 	}
-	const fs = new MemoryFS();
+	const plain: { relative: string; data: Uint8Array }[] = [];
+	const gitFiles: { path: string; data: Uint8Array }[] = [];
 	for (const entry of entries) {
 		if (!entry.name.startsWith(root)) continue;
 		const relative = entry.name.slice(root.length);
 		if (!relative) continue;
-		await fs.promises.writeFile(`${WORK}/${relative}`, entry.data);
+		if (relative === ".git" || relative.startsWith(".git/")) {
+			const gitPath = relative.slice(".git/".length);
+			if (keptGitRelative(gitPath)) gitFiles.push({ path: gitPath, data: entry.data });
+			continue;
+		}
+		plain.push({ relative, data: entry.data });
 	}
+	const shaped = plain.some(
+		(file) =>
+			file.relative.startsWith("skills/") ||
+			file.relative.startsWith("workflows/") ||
+			file.relative.startsWith("connections/"),
+	);
+	if (!shaped || !gitFiles.some((file) => file.path === "HEAD")) return { sentence: NOT_A_BACKUP };
+	try {
+		await measureGitObjects(gitFiles, limits.inflatedBytes);
+	} catch (error) {
+		if (error instanceof BackupGitError) return { sentence: error.message };
+		return { sentence: NOT_A_BACKUP };
+	}
+	const fs = new MemoryFS();
+	for (const file of plain) await fs.promises.writeFile(`${WORK}/${file.relative}`, file.data);
+	for (const file of gitFiles) await fs.promises.writeFile(`${WORK}/.git/${file.path}`, file.data);
+	await fs.promises.writeFile(`${WORK}/.git/config`, FRESH_GIT_CONFIG);
 	let oid = "";
 	try {
 		oid = await git.resolveRef({ fs, dir: WORK, ref: "refs/heads/main" });
@@ -353,10 +403,10 @@ export async function loadBackup(bytes: Uint8Array, maxBytes: number): Promise<{
 		return { sentence: NOT_A_BACKUP };
 	}
 	const files = await filesAt(fs, oid);
-	const shaped = [...files.keys()].some(
+	const inHistory = [...files.keys()].some(
 		(path) => path.startsWith("skills/") || path.startsWith("workflows/") || path.startsWith("connections/"),
 	);
-	if (!shaped) return { sentence: NOT_A_BACKUP };
+	if (!inHistory) return { sentence: NOT_A_BACKUP };
 	return { fs };
 }
 
@@ -371,7 +421,7 @@ export async function startFromBackup(
 	requestedName: string,
 	ip: string,
 ): Promise<{ actor: Actor; workspaceName: string } | { sentence: string }> {
-	const loaded = await loadBackup(bytes, backupLimits(env).uploadBytes);
+	const loaded = await loadBackup(bytes, backupLimits(env));
 	if ("sentence" in loaded) return loaded;
 	return startFromHistory(env, actor, loaded.fs, requestedName, ip, "refs/heads/main");
 }
@@ -428,6 +478,28 @@ export async function startFromHistory(
 	}
 }
 
+function isIpLiteral(host: string): boolean {
+	const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+	if (bare.includes(":")) return true;
+	if (/^\d+$/.test(bare)) return true;
+	const parts = bare.split(".");
+	if (parts.length !== 4) return false;
+	return parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+}
+
+function blockedHost(host: string, pageHost: string): boolean {
+	const name = host.toLowerCase().replace(/\.$/, "");
+	const page = pageHost.toLowerCase().split(":")[0] ?? "";
+	if (!name || name === page) return true;
+	if (name === "localhost" || name.endsWith(".localhost") || name.endsWith(".local")) return true;
+	if (name === "stylebook.dev" || name.endsWith(".stylebook.dev")) return true;
+	if (name === "workers.dev" || name.endsWith(".workers.dev")) return true;
+	if (name === "artifacts.cloudflare.net" || name.endsWith(".artifacts.cloudflare.net")) return true;
+	if (name.endsWith(".internal")) return true;
+	return isIpLiteral(name);
+}
+
+/** An https address for one repository. No address, no private host, no redirect target we would follow. */
 export function cleanBackupAddress(value: string, pageHost: string): string | null {
 	let url: URL;
 	try {
@@ -435,13 +507,9 @@ export function cleanBackupAddress(value: string, pageHost: string): string | nu
 	} catch {
 		return null;
 	}
+	if (url.protocol !== "https:") return null;
 	if (url.username || url.password || url.search || url.hash) return null;
-	const host = url.hostname.toLowerCase();
-	if (url.host.toLowerCase() === pageHost.toLowerCase()) return null;
-	if (host === "169.254.169.254" || host.endsWith(".internal")) return null;
-	const loopback = host === "127.0.0.1" || host === "localhost";
-	if (url.protocol === "http:" && !loopback) return null;
-	if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) return null;
+	if (blockedHost(url.hostname, pageHost)) return null;
 	if (!url.pathname || url.pathname === "/") return null;
 	return url.toString();
 }

@@ -40,17 +40,25 @@ MAX_OPEN_SUGGESTIONS = "200"
 MAX_SIGN_IN_EMAILS_PER_HOUR = "5"
 MAX_SIGN_IN_EMAILS_PER_IP_PER_HOUR = "20"
 MAX_SIGN_IN_EMAILS_GLOBAL_PER_HOUR = "100"
+MAX_OAUTH_REGISTRATIONS_PER_IP_PER_HOUR = "30"
 # Email links stay in the code. Access is the sign-in that runs.
 SIGN_IN = "access"
 # A download or a restore larger than this is refused with a plain message.
 MAX_BACKUP_BYTES = "20000000"
 MAX_BACKUP_UPLOAD_BYTES = "20000000"
+MAX_BACKUP_INFLATED_BYTES = "80000000"
 
 # Demo address. Remove this block when the domain is not in your account.
 # https://developers.cloudflare.com/workers/configuration/routing/custom-domains/
 [[routes]]
 pattern = "stylebook.dev"
 custom_domain = true
+
+# Sign-in from a tool stores grants here. The id is the namespace, not an account id.
+# https://developers.cloudflare.com/workers/runtime-apis/kv/
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "7efac3cb8ea340458024f26bcb68bcf2"
 
 # Arrival rows. The database id is the D1 database, not an account id.
 [[d1_databases]]

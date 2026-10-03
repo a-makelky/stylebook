@@ -5,6 +5,7 @@ import { actorFromRequest, keyCookie } from "./auth";
 import { downloadWorkspace, cleanBackupAddress, startFromBackup, startFromHistory, DOWNLOAD_TOO_BIG } from "./backup";
 import { sealSecret } from "./backup-crypto";
 import {
+	installationWorkspace,
 	readMirror,
 	removeMirror,
 	saveGithubState,
@@ -24,6 +25,7 @@ import {
 	githubInstallationToken,
 	githubReady,
 	githubRepositories,
+	githubUserCanUseInstallation,
 	GITHUB_NOT_READY,
 	installUrl,
 	type GithubRepoChoice,
@@ -32,15 +34,18 @@ import { clientIp } from "./mail";
 import { cloneHistory, MIRROR_REF, runMirror } from "./mirror";
 import { plainDate } from "./review";
 import { describeError } from "./redact";
-import { authorize } from "./roles";
+import { authorize, workspaceState } from "./roles";
 import { openSession, workspaceById } from "./teams";
 
 export const BACKUP_ADMIN_LINE = "An Admin can download or back up this workspace.";
 export const OTHER_NOT_READY = "Backups to another service are not set up on this server yet.";
+export const GITHUB_UNCONFIRMED = "That GitHub connection could not be confirmed. Try again.";
+export const GITHUB_IN_USE = "That GitHub connection is already used by another workspace.";
 
 export const BACKUP_POSTS = [
 	"/backups/download",
 	"/backups/github/connect",
+	"/backups/github/callback",
 	"/backups/github/choose",
 	"/backups/github/create",
 	"/backups/github/now",
@@ -83,6 +88,30 @@ function esc(value: string): string {
 		.replace(/</g, "&lt;")
 		.replace(/>/g, "&gt;")
 		.replace(/"/g, "&quot;");
+}
+
+/** Shown when GitHub sends the browser back. Nothing is saved until the POST. */
+export function githubReturnMain(params: URLSearchParams): string {
+	const code = params.get("code") ?? "";
+	const installation = params.get("installation_id") ?? "";
+	const state = params.get("state") ?? "";
+	const ready =
+		/^[A-Za-z0-9._-]{8,200}$/.test(code) &&
+		/^\d{1,20}$/.test(installation) &&
+		/^[0-9a-f]{48}$/.test(state);
+	if (!ready) {
+		return `<div class="sheet"><h1>GitHub</h1><p>GitHub did not finish connecting. Try again from Backups.</p></div>`;
+	}
+	return `<div class="sheet">
+    <h1>GitHub</h1>
+    <p>Finish connecting GitHub to this workspace.</p>
+    <form method="post" action="/backups/github/callback">
+      <input type="hidden" name="code" value="${esc(code)}">
+      <input type="hidden" name="installation_id" value="${esc(installation)}">
+      <input type="hidden" name="state" value="${esc(state)}">
+      <button class="primary" type="submit">Finish connecting GitHub</button>
+    </form>
+  </div>`;
 }
 
 export function githubSetupMain(code: string | null): string {
@@ -221,6 +250,10 @@ function restoreBlock(githubChoices: GithubRepoChoice[] | null): string {
     ${github}`;
 }
 
+function readOnlyNote(title: string): string {
+	return `<h2>${title}</h2><p>This workspace is read-only.</p>`;
+}
+
 export function renderBackups(input: {
 	notice: string | null;
 	tone: "ok" | "error";
@@ -231,6 +264,7 @@ export function renderBackups(input: {
 	choices: GithubRepoChoice[] | null;
 	canCreate: boolean;
 	githubProblem: string | null;
+	readOnly?: boolean;
 }): string {
 	const when = plainDate(new Date().toISOString());
 	return `<div class="sheet backups">
@@ -244,15 +278,15 @@ export function renderBackups(input: {
       <label class="check" for="include-suggestions"><input id="include-suggestions" type="checkbox" name="suggestions" value="yes"> Include open suggestions</label>
       <button class="primary" type="submit">Download</button>
     </form>
-    ${githubBlock({
+    ${input.readOnly ? readOnlyNote("Back up to GitHub") : githubBlock({
 			configured: input.githubConfigured,
 			row: input.github,
 			choices: input.choices,
 			canCreate: input.canCreate,
 			problem: input.githubProblem,
 		})}
-    ${otherBlock(input.otherConfigured, input.other)}
-    ${restoreBlock(input.githubConfigured && input.github?.installationId ? input.choices : null)}
+    ${input.readOnly ? readOnlyNote("Back up to another service") : otherBlock(input.otherConfigured, input.other)}
+    ${input.readOnly ? readOnlyNote("Restore") : restoreBlock(input.githubConfigured && input.github?.installationId ? input.choices : null)}
   </div>`;
 }
 
@@ -299,8 +333,19 @@ export async function handleBackups(request: Request, env: Env, layout: Layout):
 
 	const notice = url.searchParams.get("notice");
 	const tone = url.searchParams.get("tone") === "error" ? "error" : "ok";
+	const state = await workspaceState(env.DB, signed.actor.workspaceId);
+	const readOnly = Boolean(state?.suspended);
 
 	try {
+		if (request.method === "POST" && path !== "/backups/download") {
+			const action = path === "/backups/restore" || path === "/backups/github/restore" ? "restore" : "mirror";
+			const decision = await authorize(env, signed.actor, action);
+			if (!decision.ok) {
+				await writeAudit(env.DB, signed.actor, action === "restore" ? "restore" : "mirror-now", decision.sentence);
+				return back(decision.sentence, "error");
+			}
+		}
+
 		if (request.method === "POST" && path === "/backups/download") {
 			const form = await posted(request);
 			const file = await downloadWorkspace(env, signed.actor, form.get("suggestions") === "yes");
@@ -326,13 +371,31 @@ export async function handleBackups(request: Request, env: Env, layout: Layout):
 			return redirect(installUrl(env.GITHUB_APP_SLUG ?? "", state));
 		}
 
-		if (request.method === "GET" && path === "/backups/github/callback") {
-			const state = url.searchParams.get("state") ?? "";
-			const installation = url.searchParams.get("installation_id") ?? "";
-			if (!state || !(await takeGithubState(env.DB, state, signed.actor))) {
+		if (request.method === "POST" && path === "/backups/github/callback") {
+			if (!githubReady(env)) return back(GITHUB_NOT_READY, "error");
+			const form = await posted(request);
+			const stateValue = form.get("state") ?? "";
+			const installation = form.get("installation_id") ?? "";
+			const code = form.get("code") ?? "";
+			if (!stateValue || !(await takeGithubState(env.DB, stateValue, signed.actor))) {
 				return back("That connection expired. Try again.", "error");
 			}
-			if (!/^\d{1,20}$/.test(installation)) return back("GitHub did not finish connecting. Try again.", "error");
+			const shapeOk = /^\d{1,20}$/.test(installation) && /^[A-Za-z0-9._-]{8,200}$/.test(code);
+			const allowed = shapeOk && (await githubUserCanUseInstallation(env, code, installation));
+			if (!allowed) {
+				await writeAudit(env.DB, signed.actor, "mirror-connect", "Refused a GitHub connection.");
+				return back(GITHUB_UNCONFIRMED, "error");
+			}
+			const owner = await installationWorkspace(env.DB, installation);
+			if (owner && owner !== signed.actor.workspaceId) {
+				await writeAudit(
+					env.DB,
+					signed.actor,
+					"mirror-connect",
+					"Refused a GitHub connection already used by another workspace.",
+				);
+				return back(GITHUB_IN_USE, "error");
+			}
 			const info = await githubInstallation(env, installation);
 			const existing = await readMirror(env.DB, signed.actor.workspaceId, "github");
 			await saveMirror(env.DB, signed.actor.workspaceId, {
@@ -464,10 +527,10 @@ export async function handleBackups(request: Request, env: Env, layout: Layout):
 			const row = await readMirror(env.DB, signed.actor.workspaceId, "github");
 			if (!row?.installationId) return back("Connect GitHub first.", "error");
 			const form = await posted(request);
-			const token = await githubInstallationToken(env, row.installationId);
+			const choice = form.get("choice") ?? "";
+			const token = await githubInstallationToken(env, row.installationId, choice.split("/")[1]);
 			if (!token) return back("GitHub could not be reached. Try again.", "error");
 			const choices = await githubRepositories(token);
-			const choice = form.get("choice") ?? "";
 			if (!choices?.some((item) => item.fullName === choice)) return back("Choose a GitHub backup.", "error");
 			const address = githubAddress(choice);
 			if (!address) return back("Choose a GitHub backup.", "error");
@@ -494,7 +557,7 @@ export async function handleBackups(request: Request, env: Env, layout: Layout):
 			let choices: GithubRepoChoice[] | null = null;
 			let canCreate = false;
 			let githubProblem: string | null = null;
-			if (githubReady(env) && github?.installationId) {
+			if (!readOnly && githubReady(env) && github?.installationId) {
 				const token = await githubInstallationToken(env, github.installationId);
 				const info = await githubInstallation(env, github.installationId);
 				canCreate = Boolean(info && canCreateRepository(info.permissions));
@@ -512,6 +575,7 @@ export async function handleBackups(request: Request, env: Env, layout: Layout):
 					choices,
 					canCreate,
 					githubProblem,
+					readOnly,
 				}),
 			);
 		}
@@ -528,6 +592,7 @@ export async function handleBackups(request: Request, env: Env, layout: Layout):
 				choices: null,
 				canCreate: false,
 				githubProblem: null,
+				readOnly,
 			}),
 			500,
 		);
