@@ -178,10 +178,23 @@ function descriptionOf(text: string): string {
 	return "";
 }
 
+/** "Written by Claude for Dana" stays one phrase when the name already says who it is for. */
+export function writtenBy(writer: string, owner: string): string {
+	if (writer.endsWith(` for ${owner}`)) return `Written by ${writer}`;
+	return `Written by ${writer} for ${owner}`;
+}
+
+function modelLine(agent: Actor): string {
+	const tool = (agent.model ?? agent.id).replace(/[\r\n]+/g, " ").trim();
+	const version = agent.clientVersion?.replace(/[\r\n]+/g, " ").trim();
+	if (!version) return tool;
+	return `${tool} ${version}`.slice(0, 80);
+}
+
 function historyLine(approver: string, writer: string | null, owner: string | null, when: string): string {
 	const date = plainDate(when);
 	if (writer && owner && writer !== approver) {
-		return `Written by ${writer} for ${owner}, approved by ${approver}. ${date}.`;
+		return `${writtenBy(writer, owner)}, approved by ${approver}. ${date}.`;
 	}
 	return `Approved by ${approver}. ${date}.`;
 }
@@ -687,9 +700,11 @@ export async function saveAgentSuggestion(
 	const existing = await listEditions(library.repo, 1);
 	if (existing.length === 0) throw new DeskError("The library has no edition yet.");
 	await ensureSuggestion(env.WORKSPACE, library.repo, name);
+	const grant = await issueGrant(env.DB, agent, name, true, 300);
+	void key;
 	const saved = await publishSavedEdition({
 		remote: gatewayRemote(origin, name),
-		token: key,
+		token: grant,
 		path,
 		content: input.content,
 		message: why,
@@ -699,7 +714,7 @@ export async function saveAgentSuggestion(
 			text: editionNote({
 				actor: agent.name,
 				onBehalfOf: owner.name,
-				model: agent.model ?? agent.id,
+				model: modelLine(agent),
 				runId: name,
 				intent: why,
 			}),

@@ -8,6 +8,23 @@ import { actorBySession, endSession } from "./teams";
 export const KEY_COOKIE = "stylebook";
 export const CHOOSE_COOKIE = "stylebook_choose";
 export const SEEN_COOKIE = "stylebook_seen";
+export const RETURN_COOKIE = "stylebook_return";
+
+/** Only a same-origin approval address. Anything else is dropped. */
+export function safeReturnPath(value: string): string | null {
+	if (value.length < 1 || value.length > 2000) return null;
+	if (value.includes("//") || value.includes("\\") || value.includes("\n") || value.includes("\r")) return null;
+	if (value !== "/authorize" && !value.startsWith("/authorize?")) return null;
+	return value;
+}
+
+export function returnCookie(path: string): string {
+	return `${RETURN_COOKIE}=${encodeURIComponent(path)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`;
+}
+
+export function clearReturnCookie(): string {
+	return `${RETURN_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
+}
 
 export function readPresentedKey(request: Request): string | null {
 	const cookie = request.headers.get("Cookie") ?? "";

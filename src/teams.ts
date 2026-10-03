@@ -1,7 +1,8 @@
 // A workspace is one team: its own library, people, agents and history.
 // The Artifacts namespace is shared. The workspace id is the repo prefix.
 
-import { actorById, hashKey, registerActor, type Actor } from "./actors";
+import { actorById, hashKey, listActors, registerActor, type Actor } from "./actors";
+import { toolLabel } from "./catalog";
 import { revokeGrants } from "./access";
 import type { Env } from "./env";
 import { LIMIT_MESSAGE, limitsOf } from "./limits";
@@ -255,7 +256,19 @@ export async function endSession(db: D1Database, secret: string): Promise<void> 
 	await db.prepare(`DELETE FROM sessions WHERE token_hash = ?1`).bind(await hashKey(secret)).run();
 }
 
+async function revokeOauthGrants(env: Env, actorId: string): Promise<void> {
+	const oauth = env.OAUTH_PROVIDER;
+	if (!oauth) return;
+	let cursor: string | undefined;
+	do {
+		const listed = await oauth.listUserGrants(actorId, cursor ? { cursor } : undefined);
+		for (const grant of listed.items) await oauth.revokeGrant(grant.id, actorId);
+		cursor = listed.cursor;
+	} while (cursor);
+}
+
 async function dropActorAccess(env: Env, actorId: string): Promise<void> {
+	await revokeOauthGrants(env, actorId);
 	await revokeGrants(env.DB, actorId);
 	await env.DB.prepare(`DELETE FROM sessions WHERE actor_id = ?1`).bind(actorId).run();
 	await env.DB.prepare(`DELETE FROM actor_keys WHERE actor_id = ?1`).bind(actorId).run();
@@ -309,6 +322,92 @@ export async function connectAgent(
 		key,
 	});
 	return { actor, key };
+}
+
+async function currentKeyHash(db: D1Database, actorId: string): Promise<string | null> {
+	const row = await db
+		.prepare(`SELECT key_hash FROM actor_keys WHERE actor_id = ?1 ORDER BY created_at DESC LIMIT 1`)
+		.bind(actorId)
+		.first<{ key_hash: string }>();
+	return row?.key_hash ?? null;
+}
+
+async function unusedAgentName(db: D1Database, workspaceId: string, base: string): Promise<string> {
+	const taken = new Set(
+		(await listActors(db, workspaceId)).filter((agent) => agent.kind === "agent").map((agent) => agent.name),
+	);
+	if (!taken.has(base)) return base;
+	for (let number = 2; number < 100; number++) {
+		const suffix = ` (${number})`;
+		const name = `${base.slice(0, 80 - suffix.length)}${suffix}`;
+		if (!taken.has(name)) return name;
+	}
+	return base.slice(0, 80);
+}
+
+/**
+ * An approved sign-in. The same OAuth client reconnects to its own agent and
+ * keeps the key it already has. A different client gets a new agent. A key
+ * made by hand is never replaced.
+ */
+export async function connectSignedInAgent(
+	env: Env,
+	owner: Actor,
+	toolRaw: string,
+	clientId: string,
+): Promise<{ actor: Actor; keyHash: string } | { message: string }> {
+	if (owner.kind !== "person" || owner.removedAt) return { message: "Sign in to connect a tool." };
+	const client = clientId.trim();
+	if (!client || client.length > 2000 || /[\r\n]/.test(client)) return { message: "This app could not be verified." };
+	const tool = toolLabel(toolRaw).slice(0, 40);
+	const decision = await authorize(env, owner, "connect-agent");
+	if (!decision.ok) return { message: decision.sentence };
+	const mapped = await env.DB.prepare(
+		`SELECT agent_id FROM oauth_agents WHERE client_id = ?1 AND owner_id = ?2 AND workspace_id = ?3`,
+	)
+		.bind(client, owner.id, owner.workspaceId)
+		.first<{ agent_id: string }>();
+	if (mapped) {
+		const agent = await actorById(env.DB, mapped.agent_id);
+		if (
+			agent &&
+			!agent.removedAt &&
+			agent.kind === "agent" &&
+			agent.ownerId === owner.id &&
+			agent.workspaceId === owner.workspaceId
+		) {
+			const existingHash = await currentKeyHash(env.DB, agent.id);
+			if (existingHash) return { actor: agent, keyHash: existingHash };
+			const key = newKey();
+			const keyHash = await hashKey(key);
+			await env.DB.prepare(`INSERT INTO actor_keys (key_hash, actor_id, created_at) VALUES (?1, ?2, ?3)`)
+				.bind(keyHash, agent.id, new Date().toISOString())
+				.run();
+			return { actor: agent, keyHash };
+		}
+	}
+	if ((await countMembers(env.DB, owner.workspaceId, "agent")) >= (await effectiveLimits(env, owner.workspaceId)).agents) {
+		return { message: LIMIT_MESSAGE.agents };
+	}
+	const base = `${tool} for ${owner.name}`.replace(/[\r\n]+/g, " ").trim().slice(0, 80);
+	const name = await unusedAgentName(env.DB, owner.workspaceId, base);
+	const key = newKey();
+	const actor = await registerActor(env.DB, {
+		id: newActorId("agent"),
+		kind: "agent",
+		name,
+		workspaceId: owner.workspaceId,
+		ownerId: owner.id,
+		model: tool,
+		key,
+	});
+	await env.DB.prepare(
+		`INSERT INTO oauth_agents (client_id, owner_id, workspace_id, agent_id) VALUES (?1, ?2, ?3, ?4)
+     ON CONFLICT(client_id, owner_id, workspace_id) DO UPDATE SET agent_id = excluded.agent_id`,
+	)
+		.bind(client, owner.id, owner.workspaceId, actor.id)
+		.run();
+	return { actor, keyHash: await hashKey(key) };
 }
 
 /** The agent's own person, or an Admin revoking it. */
@@ -369,6 +468,7 @@ export async function freshAgentKey(
 	const decision = await authorize(env, owner, "connect-agent");
 	if (!decision.ok) return { message: decision.sentence };
 	const key = newKey();
+	await revokeOauthGrants(env, agent.id);
 	await revokeGrants(env.DB, agent.id);
 	await env.DB.prepare(`DELETE FROM actor_keys WHERE actor_id = ?1`).bind(agent.id).run();
 	await env.DB.prepare(`INSERT INTO actor_keys (key_hash, actor_id, created_at) VALUES (?1, ?2, ?3)`)
