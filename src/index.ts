@@ -9,6 +9,7 @@ import { publishDirect } from "./bypass";
 import type { Env } from "./env";
 import { handleGit } from "./gateway";
 import { sanitize, describeError } from "./redact";
+import { foreignPost, foreignPostResponse } from "./origin";
 import { handleScreen } from "./screen";
 import { LIMIT_MESSAGE, limitsOf } from "./limits";
 import { d1ArrivalLog, d1AuditLog, runSwarm, workflowLauncher, MAX_SESSIONS } from "./swarm";
@@ -57,6 +58,8 @@ function checkDemoKey(request: Request, env: Env): Response | null {
 export default {
 	async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
+
+		if (foreignPost(request)) return foreignPostResponse();
 
 		if (request.method === "GET" && url.pathname === "/health") {
 			return json({ ok: true, name: "stylebook" });

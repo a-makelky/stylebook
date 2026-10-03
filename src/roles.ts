@@ -10,7 +10,7 @@ import {
 	type Role,
 	type WorkspaceSettings,
 } from "./permit";
-import { isLibraryName } from "./workspace";
+import { isLibraryName, isSuggestionName } from "./workspace";
 
 export interface WorkspaceState extends WorkspaceSettings {
 	id: string;
@@ -140,15 +140,20 @@ export async function authorize(
 	});
 }
 
-/** Library writes are a publish. Other copies stay on the repo check. */
+/**
+ * A library write is a publish. A write to a suggestion copy is a suggest,
+ * so suspension, a removed owner, and a deleted workspace apply there too.
+ */
 export async function authorizeRepo(
 	env: Env,
 	actor: Actor,
 	repoName: string,
 	write: boolean,
 ): Promise<PermitResult> {
-	if (!write || !isLibraryName(repoName)) return { ok: true };
-	return authorize(env, actor, "publish");
+	if (!write) return { ok: true };
+	if (isLibraryName(repoName)) return authorize(env, actor, "publish");
+	if (isSuggestionName(repoName)) return authorize(env, actor, "suggest");
+	return { ok: true };
 }
 
 export async function setPageLock(env: Env, actor: Actor, path: string, lock: boolean): Promise<string | null> {
